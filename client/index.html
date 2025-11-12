@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Connect 4 by Cole Propach</title>
+  <style>
+    body { margin: 0; background: #222; }
+    canvas { display: block; margin: auto; background: #fff; }
+    /* The switch container */
+  .switch {
+    position: relative;
+    display: inline-block;
+    width: 60px;
+    height: 34px;
+  }
+
+  /* Hide default checkbox */
+  .switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+
+  /* The slider */
+  .slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-color: #ccc;
+    transition: 0.4s;
+    border-radius: 34px;
+  }
+
+  .slider:before {
+    position: absolute;
+    content: "";
+    height: 26px; width: 26px;
+    left: 4px; bottom: 4px;
+    background-color: white;
+    transition: 0.4s;
+    border-radius: 50%;
+  }
+
+  /* Checked state */
+  input:checked + .slider {
+    background-color: #4CAF50;
+  }
+
+  input:checked + .slider:before {
+    transform: translateX(26px);
+  }
+  /* Text styles for switch */
+  #statusText {
+    font-size: 18px;
+    font-weight: bold;
+    transition: color 0.3s;
+  }
+
+  /* Optional: you can define classes for ON/OFF */
+  .on {
+    color: green;
+  }
+  .off {
+    color: red;
+  }
+  </style>
+</head>
+<body>
+  <canvas id="connect4" width="700" height="600"></canvas>
+  <div style="text-align: center; margin: 20px;">
+  <button id="resetButton" style="padding: 20px 40px; font-size: 18px;">
+    Reset Game
+  </button>
+  </div>
+
+  <div style="text-align: center; margin: 20px;">
+    <label class="switch">
+      <input type="checkbox" id="engineToggle">
+      <span class="slider"></span>
+    </label>
+    <p id="statusText" class="off">Engine Opponent: OFF</p>
+  </div>
+
+  <script>
+    const toggle = document.getElementById('engineToggle');
+    const statusText = document.getElementById('statusText');
+
+    toggle.addEventListener('change', () => {
+      if (toggle.checked) {
+        statusText.textContent = "Engine Opponent: ON";
+        statusText.classList.remove('off');
+        statusText.classList.add('on');
+      } else {
+        statusText.textContent = "Engine Opponent: OFF";
+        statusText.classList.remove('on');
+        statusText.classList.add('off');
+      }
+    });
+  </script>
+
+  <script src="connect4.js"></script>
+</body>
+</html>
