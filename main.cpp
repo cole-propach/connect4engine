@@ -8,8 +8,33 @@
 #include <vector>
 #include <algorithm>
 #include <unordered_map>
+#include <random>
+#include <chrono>
 
 using namespace std;
+
+bool doTrans = true;
+
+//zobrist uint64_t -> evaluation as double
+unordered_map<BOARD, double> posToEval;
+
+//contains a random value for each color in each position to be used for hashing
+BOARD zobrist[7][6][2];
+
+//initialize the Zobrist table with random 64-bit numbers
+void initZobrist() {
+    std::random_device rd;
+    std::mt19937_64 gen(rd());
+    std::uniform_int_distribution<uint64_t> dist;
+
+    for (int col = 0; col < 7; ++col) {
+        for (int row = 0; row < 6; ++row) {
+            for (int color = 0; color < 2; ++color) {
+                zobrist[col][row][color] = dist(gen);
+            }
+        }
+    }
+}
 
 int getBitIndex(int row, int col) {
     return col * 7 + row; //includes sentinel bit at the top of each column
@@ -63,7 +88,7 @@ int Position::colorToMove(){
     return (rcount==ycount)? RED : YELLOW;
 }
 
-int Position::indexOfNewPieceInCol(int col){
+int Position::rowOfNewPieceInCol(int col){
     BOARD combined = rboard | yboard; //combine the 2 boards
     //bit shift the col all the way to the least sig bits, then chop off everything above with bitwise &
     BOARD columnMask = (combined >> (col * 7)) & 0x7F; 
@@ -72,18 +97,20 @@ int Position::indexOfNewPieceInCol(int col){
     //if the row is full, error
     if(rowOfFirstEmptySlot >= 6) return -1;
     //return the index
-    return getBitIndex(rowOfFirstEmptySlot, col);
+    return rowOfFirstEmptySlot;
 }
 
 void Position::playMove(int col){
-    lastColPlayed = col;
     int toMove = colorToMove();
-    int indexToPlace = indexOfNewPieceInCol(col);
-    assert(indexToPlace != -1); //makes sure the row isnt full
+    int row = rowOfNewPieceInCol(col);
+    assert(row != -1); //makes sure the row isnt full
+    int indexToPlace = getBitIndex(row, col);
     if(toMove == RED)
         setIndexTo1(rboard, indexToPlace);
     else
         setIndexTo1(yboard, indexToPlace);
+   
+    hash ^= zobrist[col][row][toMove];
 }
 
 /*
@@ -148,6 +175,14 @@ void Position::evaluate(){
     else if(detectWin(yboard)){
         eval = -numeric_limits<double>::infinity();
         return;
+    }
+
+    if(doTrans){
+        //if we've encountered it before, return prev eval
+        if(posToEval.count(hash) == 1){
+            eval = posToEval[hash];
+            return;
+        }
     }
 
     eval = 0;
@@ -278,6 +313,11 @@ void Position::evaluate(){
 
     eval += rcount * scoreCenter;
     eval -= ycount * scoreCenter;
+
+    if(doTrans){
+        //put this into trasposition table
+        posToEval[hash] = eval;
+    }
 }
 
 vector<Position> Position::children(){
@@ -390,12 +430,41 @@ int bestMove(Position pos, int depth){
     return bestMove;
 }
 
+void Position::initHash(){
+    hash = 0;
+    for(int col=0; col<7; col++){
+        for(int row=0; row<6; row++){
+            if(getBit(rboard, row, col))
+                hash ^= zobrist[col][row][0];
+            else if(getBit(yboard, row, col))
+                hash ^= zobrist[col][row][1];
+        }
+    }
+}
+
 int main(int argc, char* argv[]){
+    doTrans = true;
+    //start time
+    auto start = std::chrono::high_resolution_clock::now();
+
     Position pos;
+
+    if(doTrans){
+        initZobrist();
+        pos.initHash();
+    }
+
     if(argc == 1)
         pos.putStringIntoBoard("");
     else
         pos.putStringIntoBoard(argv[1]);
     pos.printBoard();
-    cout << bestMove(pos, 10);
+    cout << bestMove(pos, 12) <<'\n';
+
+    //end time
+    auto end = std::chrono::high_resolution_clock::now();
+
+    //duriation of main() in ms
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    cout << "Main took " << duration.count() << " milliseconds to run.\n";
 }
