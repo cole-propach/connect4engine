@@ -10,10 +10,13 @@
 #include <unordered_map>
 #include <random>
 #include <chrono>
+#include <thread>
+#include <future>
 
 using namespace std;
 
-bool doTrans = true;
+bool doTrans;
+bool isMultithreaded;
 
 //zobrist uint64_t -> evaluation as double
 unordered_map<BOARD, double> posToEval;
@@ -164,6 +167,8 @@ bool detectWin(BOARD board){
     return hasHorizontalWin(board) || hasVerticalWin(board) || hasDiagonalWin(board);
 }
 
+mutex mtx;
+
 void Position::evaluate(){
     //check if the position is already won
     //red win = +inf
@@ -178,6 +183,7 @@ void Position::evaluate(){
     }
 
     if(doTrans){
+        lock_guard<mutex> lock(mtx);
         //if we've encountered it before, return prev eval
         if(posToEval.count(hash) == 1){
             eval = posToEval[hash];
@@ -315,6 +321,7 @@ void Position::evaluate(){
     eval -= ycount * scoreCenter;
 
     if(doTrans){
+        lock_guard<mutex> lock(mtx);
         //put this into trasposition table
         posToEval[hash] = eval;
     }
@@ -327,6 +334,7 @@ vector<Position> Position::children(){
         int count = __builtin_popcountll( getColumn(yboard, i) | getColumn(rboard, i) );
         if(count < 6){
             Position newPos = Position(rboard, yboard);
+            newPos.hash = hash;
             newPos.playMove(i);
             output.push_back(newPos);
         }
@@ -395,7 +403,13 @@ int bestMove(Position pos, int depth){
         if(pos.isLegalMove(i)){
             Position child = Position(pos.rboard, pos.yboard);
             child.playMove(i);
-            moveToMinimax[i] = minimax(child, depth-1, !isMaximizingPlayer, -numeric_limits<double>::infinity(), numeric_limits<double>::infinity());
+            if(isMultithreaded){
+                auto fut = async(launch::async, minimax, child, depth-1, !isMaximizingPlayer, -numeric_limits<double>::infinity(), numeric_limits<double>::infinity());
+                moveToMinimax[i] = fut.get();
+            }
+            else{
+                moveToMinimax[i] = minimax(child, depth-1, !isMaximizingPlayer, -numeric_limits<double>::infinity(), numeric_limits<double>::infinity());
+            }
         }
     }
 
@@ -443,7 +457,14 @@ void Position::initHash(){
 }
 
 int main(int argc, char* argv[]){
+    //settings
     doTrans = true;
+    isMultithreaded = true;
+    
+    int depth = 10;
+    bool printRuntime = true;
+    
+
     //start time
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -459,12 +480,13 @@ int main(int argc, char* argv[]){
     else
         pos.putStringIntoBoard(argv[1]);
     pos.printBoard();
-    cout << bestMove(pos, 12) <<'\n';
+    cout << bestMove(pos, depth) <<'\n';
 
     //end time
     auto end = std::chrono::high_resolution_clock::now();
 
     //duriation of main() in ms
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    cout << "Main took " << duration.count() << " milliseconds to run.\n";
+    if(printRuntime)
+        cout << "Runtime: " << duration.count() << " ms\n";
 }
