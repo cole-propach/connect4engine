@@ -5,7 +5,7 @@
 
 #define BOARD uint64_t
 
-#define INF numeric_limits<double>::infinity()
+#define INF 9999999 //almost 10 million
 
 enum{
     RED, YELLOW
@@ -14,7 +14,7 @@ enum{
 struct Position{
     BOARD rboard;
     BOARD yboard;
-    double eval;
+    int eval;
     BOARD hash;
     int mostRecentMove;
 

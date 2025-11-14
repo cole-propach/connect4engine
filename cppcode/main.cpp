@@ -525,7 +525,7 @@ int main(int argc, char* argv[]){
     //settings
     
     int depth = stoi(argv[2]);
-    bool printRuntime = false;
+    bool printRuntime = true;
     bool printBoard = false;
 
     //start time
