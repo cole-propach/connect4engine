@@ -7,6 +7,7 @@ let deltaTime = 0;
 async function runExe(arg1, arg2) {
   // Construct the URL (encode arguments to be URL-safe)
   const url = `http://localhost:3000/run?arg1=${encodeURIComponent(arg1)}&arg2=${encodeURIComponent(arg2)}`;
+  console.log('Fetching engine response with args ' + arg1 + ' ' + arg2)
 
   try {
     const response = await fetch(url);  // Fetch from server
@@ -16,7 +17,7 @@ async function runExe(arg1, arg2) {
     const result = await response.text(); // Or .json() if server returns JSON
     return result;
   } catch (err) {
-    console.error('Error fetching exe result:', err);
+    console.error('Error fetching engine result', err);
     throw err;
   }
 }
@@ -185,7 +186,6 @@ function drawWinLines() {
     }
 }
 
-
 function drawWhiteCircles() {
     const rows = 6;
     const cols = 7;
@@ -334,11 +334,8 @@ function simulate(){
         let turn = ((moves.length % 2) == 0) ? 'red' : 'gold';
         if(turn === 'gold' && !aiThinking){
             aiThinking = true;
-            console.log("moves is:");
-            console.log(moves.split('').map(c => c.charCodeAt(0)));
-            console.log(moves);
             (async () => {
-                let result = await runExe(moves, 10);
+                let result = await runExe(moves, 12);
                 result = result.trim(); //remove newlines and spaces
                 playMove(result);
                 aiThinking = false;
