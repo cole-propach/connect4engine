@@ -10,7 +10,7 @@ const exePath = path.join(__dirname, 'engine.exe');
 
 app.use(cors());
 
-//xxample URL: http://localhost:3000/run?arg1=hello&arg2=world
+//example URL: http://localhost:3000/run?arg1=hello&arg2=world
 app.get('/run', (req, res) => {
     const { arg1, arg2 } = req.query;
 
@@ -33,5 +33,5 @@ app.get('/run', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Server running at http://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });

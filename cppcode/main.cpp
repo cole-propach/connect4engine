@@ -15,11 +15,21 @@
 
 using namespace std;
 
-bool doTrans;
-bool isMultithreaded;
+//zobrist uint64_t -> to TTEntry (seen in h file)
+unordered_map<BOARD, TTEntry> tt;
 
-//zobrist uint64_t -> evaluation as double
-unordered_map<BOARD, double> posToEval;
+mutex TTmtx;
+
+TTEntry readTT(BOARD key){
+    lock_guard<mutex> lock(TTmtx);
+    return tt[key];
+}
+
+void writeTT(BOARD key, TTEntry& val){
+    lock_guard<mutex> lock(TTmtx);
+    if(tt.count(key) > 0)
+        tt[key] = val;
+}
 
 //contains a random value for each color in each position to be used for hashing
 BOARD zobrist[7][6][2];
@@ -107,12 +117,12 @@ void Position::playMove(int col){
     int toMove = colorToMove();
     int row = rowOfNewPieceInCol(col);
     assert(row != -1); //makes sure the row isnt full
+    mostRecentMove = col;
     int indexToPlace = getBitIndex(row, col);
     if(toMove == RED)
         setIndexTo1(rboard, indexToPlace);
     else
         setIndexTo1(yboard, indexToPlace);
-   
     hash ^= zobrist[col][row][toMove];
 }
 
@@ -167,28 +177,22 @@ bool detectWin(BOARD board){
     return hasHorizontalWin(board) || hasVerticalWin(board) || hasDiagonalWin(board);
 }
 
-mutex mtx;
+bool Position::isLegalMove(int col){
+    int count = __builtin_popcountll( getColumn(yboard, col) | getColumn(rboard, col));
+    return count < 6;
+}
 
 void Position::evaluate(){
     //check if the position is already won
     //red win = +inf
     //yellow win = -inf
     if(detectWin(rboard)){
-        eval = numeric_limits<double>::infinity();
+        eval = INF;
         return;
     }
     else if(detectWin(yboard)){
-        eval = -numeric_limits<double>::infinity();
+        eval = -INF;
         return;
-    }
-
-    if(doTrans){
-        lock_guard<mutex> lock(mtx);
-        //if we've encountered it before, return prev eval
-        if(posToEval.count(hash) == 1){
-            eval = posToEval[hash];
-            return;
-        }
     }
 
     eval = 0;
@@ -319,38 +323,92 @@ void Position::evaluate(){
 
     eval += rcount * scoreCenter;
     eval -= ycount * scoreCenter;
-
-    if(doTrans){
-        lock_guard<mutex> lock(mtx);
-        //put this into trasposition table
-        posToEval[hash] = eval;
-    }
 }
 
-vector<Position> Position::children(){
-    //every col
+vector<Position> Position::children(int firstMove) {
     vector<Position> output;
-    for(int i = 0; i < 7; i++){
-        int count = __builtin_popcountll( getColumn(yboard, i) | getColumn(rboard, i) );
-        if(count < 6){
+
+    //default order of columns: middle first, then alternate outwards
+    int colOrder[7] = {3, 4, 2, 5, 1, 6, 0};
+
+    //if firstMove is specified, create a new order
+    vector<int> finalOrder;
+    if (firstMove != -1) {
+        finalOrder.push_back(firstMove); //first move first
+        for (int col : colOrder) {
+            if (col != firstMove) {
+                finalOrder.push_back(col);
+            }
+        }
+    } else {
+        finalOrder.assign(colOrder, colOrder + 7); //use default order
+    }
+
+    for (int col : finalOrder) {
+        int count = __builtin_popcountll(getColumn(yboard, col) | getColumn(rboard, col));
+        if (count < 6) {
             Position newPos = Position(rboard, yboard);
             newPos.hash = hash;
-            newPos.playMove(i);
+            newPos.playMove(col);
             output.push_back(newPos);
         }
     }
+
     return output;
 }
 
+//alpha-beta pruning works by maintaining a search window [alpha, beta)
 //alpha is best score possible so far for maximizing player (red) at this level
 //beta is best score possible so far for minimizing player (yellow) at this level
-double minimax(Position pos, int depth, bool isMaximizingPlayer, double alpha, double beta){
+//minimax returns the best possible score that can be achieved for a given player from this position
+double minimax(Position &pos, int depth, bool isMaximizingPlayer, double alpha, double beta){
+    //??
+    double alphaOrig = alpha;
+    double betaOrig = beta;
+    //calling children() auto updates the hash of each child
+    uint64_t hash = pos.hash;
+
+    //check in TT for this position
+    TTEntry e = readTT(hash);
+    //use this entry only if it is for the same position as me, and if its depth is not lower than mine
+    //make sure depth is not lower than mine because if my depth is higher, the search that put this entry into the table did not go deep enough to ensure i will get the same score if i search for myself
+    bool canUseThisEntry = e.key == hash && e.depth >= depth;
+    if (canUseThisEntry){
+        //if we have already done exactly this, just stop the search down the tree and return the previously calculated score
+        if (e.flag == EXACT) {
+            return e.score;
+        }
+        //need to set alpha and not return because the search that put this entry in did not complete the search for this position, it was pruned
+        if (e.flag == LOWERBOUND) {
+            alpha = max(alpha, e.score);
+        }
+        //need to set beta, same explanation as alpha
+        if (e.flag == UPPERBOUND) {
+            beta = min(beta, e.score);
+        }
+        //prune condition
+        if (alpha >= beta) {
+            return e.score; //cutoff
+        }
+    }
+    
+    //if we are at a leaf, return the static eval because we cant make any moves from here
     if(depth == 0 || detectWin(pos.rboard) || detectWin(pos.yboard)){
         pos.evaluate();
         return pos.eval;
     }
 
-    vector<Position> children = pos.children();
+    int bestMove = -1;
+    vector<Position> children;
+    //if the table entry has a best move, check that first
+    if(e.bestMove != -1){
+        children = pos.children(e.bestMove);
+    }
+    else{ //otherwise go check center outwards
+        children = pos.children();
+    }
+
+    //if the board is full, but there are no wins, return 0 for tie (cant be a win if the code reaches this point due to above return)
     if(children.size() == 0){
         return 0;
     }
@@ -358,90 +416,97 @@ double minimax(Position pos, int depth, bool isMaximizingPlayer, double alpha, d
     double currentBest;
 
     if(isMaximizingPlayer){
-        currentBest = -numeric_limits<double>::infinity();
+        currentBest = -INF;
         //for every child
         for(Position child : children){
             //minimax it
             double childMinimax = minimax(child, depth-1, !isMaximizingPlayer, alpha, beta);
-            //check the minimax against the current best and keep the highest
-            currentBest = max(currentBest, childMinimax);
+            //check the minimax against the current best and keep the best
+            if(childMinimax > currentBest){
+                currentBest = childMinimax;
+                bestMove = child.mostRecentMove;
+            }
+            
             alpha = max(alpha, childMinimax);
-            if(beta <= alpha){
+            if(beta <= alpha){ //prune the rest
                 break;
             }
         }
     }
     else{ //minimizing player
-        currentBest = numeric_limits<double>::infinity();
+        currentBest = INF;
         //for every child
         for(Position child : children){
             //minimax it
             double childMinimax = minimax(child, depth-1, !isMaximizingPlayer, alpha, beta);
-            //check the minimax against the current best and keep the highest
-            currentBest = min(currentBest, childMinimax);
+            //check the minimax against the current best and keep the best
+            if(childMinimax < currentBest){
+                currentBest = childMinimax;
+                bestMove = child.mostRecentMove;
+            }
+            
             beta = min(beta, childMinimax);
-            if(beta <= alpha){
+            if(beta <= alpha){ //prune the rest
                 break;
             }
         }
     }
 
+    TTEntry newE;
+    newE.key = hash;
+    newE.depth = depth;
+    newE.bestMove = bestMove;
+
+    if(currentBest <= alphaOrig){
+        newE.flag = UPPERBOUND;
+    } 
+    else if(currentBest >= betaOrig){
+        newE.flag = LOWERBOUND;
+    }
+    else{
+        newE.flag = EXACT;
+    }
+
+    newE.score = currentBest;
+    writeTT(hash, newE);
+
     return currentBest;
 }
 
-bool Position::isLegalMove(int col){
-    int count = __builtin_popcountll( getColumn(yboard, col) | getColumn(rboard, col));
-    return count < 6;
+int pickBestMoveFromRootTT(uint64_t rootHash) {
+
+    TTEntry e = readTT(rootHash); //get TT entry for root
+    if (e.key != rootHash) {
+        return -1; //TT might be empty
+    }
+    return e.bestMove; //move with best score
+}
+
+void threadWorker(int threadID, Position &root, int maxDepth, bool isMaximizingPlayer) {
+    //each thread runs minimax from the root at depths up to the desired depth
+    for (int depth = 1; depth <= maxDepth; depth++) {
+        minimax(root, depth, isMaximizingPlayer, -INF, INF);
+    }
 }
 
 int bestMove(Position pos, int depth){
     bool isMaximizingPlayer = pos.colorToMove() == RED;
 
-    double moveToMinimax[7];
-
-    for(int i = 0; i < 7; i++){
-        if(pos.isLegalMove(i)){
-            Position child = Position(pos.rboard, pos.yboard);
-            child.playMove(i);
-            if(isMultithreaded){
-                auto fut = async(launch::async, minimax, child, depth-1, !isMaximizingPlayer, -numeric_limits<double>::infinity(), numeric_limits<double>::infinity());
-                moveToMinimax[i] = fut.get();
-            }
-            else{
-                moveToMinimax[i] = minimax(child, depth-1, !isMaximizingPlayer, -numeric_limits<double>::infinity(), numeric_limits<double>::infinity());
-            }
-        }
+    //create 8 new threads that will find the best move
+    vector<thread> threads;
+    for(int i = 0; i < 8; i++){
+        //need ref() for passing by ref to threads
+        threads.emplace_back(threadWorker, i, ref(pos), depth, isMaximizingPlayer);
     }
 
-    double currentBest;
-    int bestMove = 0;
+    //must be reference since threads cant be copied
+    for(thread &t : threads){
+        t.join();
+    }
 
-    if(isMaximizingPlayer){
-        currentBest = -numeric_limits<double>::infinity();
-        //for every child
-        for(int i = 0; i < 7; i++){
-            if(pos.isLegalMove(i)){
-                if(moveToMinimax[i] > currentBest){
-                    bestMove = i;
-                    currentBest = moveToMinimax[i];
-                }
-            }
-        }
-    }
-    else{ //minimizing player
-        currentBest = numeric_limits<double>::infinity();
-        //for every child
-        for(int i = 0; i < 7; i++){
-            if(pos.isLegalMove(i)){
-                if(moveToMinimax[i] < currentBest){
-                    bestMove = i;
-                    currentBest = moveToMinimax[i];
-                }
-            }
-        }
-    }
-    
-    return bestMove;
+    //return the best move found by the threads
+    //check TT for best move of hash of root position
+    return readTT(pos.hash).bestMove;
 }
 
 void Position::initHash(){
@@ -458,8 +523,6 @@ void Position::initHash(){
 
 int main(int argc, char* argv[]){
     //settings
-    doTrans = true;
-    isMultithreaded = true;
     
     int depth = stoi(argv[2]);
     bool printRuntime = false;
@@ -470,10 +533,8 @@ int main(int argc, char* argv[]){
 
     Position pos;
 
-    if(doTrans){
-        initZobrist();
-        pos.initHash();
-    }
+    initZobrist();
+    pos.initHash();
 
     pos.putStringIntoBoard(argv[1]);
     if(printBoard){

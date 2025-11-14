@@ -79,6 +79,7 @@
         "__bit_reference": "cpp",
         "__hash_table": "cpp",
         "__node_handle": "cpp",
-        "execution": "cpp"
+        "execution": "cpp",
+        "list": "cpp"
     }
 }
