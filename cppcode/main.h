@@ -32,7 +32,7 @@ struct Position{
     void evaluate();
     bool isLegalMove(int col);
     void initHash();
-    std::vector<Position> children(int firstMove = -1);
+    std::vector<Position*>* children(int firstMove = -1);
 };
 
 enum{

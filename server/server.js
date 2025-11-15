@@ -6,7 +6,7 @@ const path = require('path');
 const app = express();
 const PORT = 3000;
 
-const exePath = path.join(__dirname, 'engine.exe');
+const exePath = path.join(__dirname, 'engine');
 
 app.use(cors());
 

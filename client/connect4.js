@@ -6,7 +6,7 @@ let deltaTime = 0;
 
 async function runExe(arg1, arg2) {
   // Construct the URL (encode arguments to be URL-safe)
-  const url = `http://localhost:3000/run?arg1=${encodeURIComponent(arg1)}&arg2=${encodeURIComponent(arg2)}`;
+  const url = `https://heckyya.lol/run?arg1=${encodeURIComponent(arg1)}&arg2=${encodeURIComponent(arg2)}`;
 
   try {
     const response = await fetch(url);  // Fetch from server
@@ -334,7 +334,7 @@ function simulate(){
         if(turn === 'gold' && !aiThinking){
             aiThinking = true;
             (async () => {
-                let result = await runExe(moves, 12);
+                let result = await runExe(moves, 10);
                 result = result.trim(); //remove newlines and spaces
                 playMove(result);
                 aiThinking = false;
