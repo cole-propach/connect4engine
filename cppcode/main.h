@@ -32,7 +32,7 @@ struct Position{
     void evaluate();
     bool isLegalMove(int col);
     void initHash();
-    std::vector<Position*>* children(int firstMove = -1);
+    std::vector<Position*>* children(uint8_t firstMove = 255);
 };
 
 enum{
@@ -42,7 +42,7 @@ enum{
 struct TTEntry {
     uint64_t key;      //zobrist hash to verify match
     int depth;         //depth of stored search
-    double score;      //score from minimax
+    int score;      //score from minimax
     uint8_t flag;      //EXACT, LOWERBOUND, UPPERBOUND
     uint8_t bestMove;  //best move for ordering
 };

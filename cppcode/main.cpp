@@ -16,19 +16,32 @@
 using namespace std;
 
 //zobrist uint64_t -> to TTEntry (seen in h file)
-unordered_map<BOARD, TTEntry>* tt = new unordered_map<BOARD, TTEntry>();
+unordered_map<BOARD, TTEntry*>* tt = new unordered_map<BOARD, TTEntry*>();
 
 mutex TTmtx;
 
-TTEntry readTT(BOARD key){
+TTEntry* readTT(BOARD key){
     lock_guard<mutex> lock(TTmtx);
-    return (*tt)[key];
+    auto it = tt->find(key);
+    if(it != tt->end()){
+        return it->second;  //return the entry if found
+    }
+    else{
+        //handle the case where the key is not found
+        return nullptr;
+    }
 }
 
 void writeTT(BOARD key, TTEntry& val){
     lock_guard<mutex> lock(TTmtx);
-    if((*tt).count(key) > 0)
-        (*tt)[key] = val;
+    TTEntry* newVal = new TTEntry();
+    newVal->key = val.key;
+    newVal->depth = val.depth;
+    newVal->score = val.score;
+    newVal->flag = val.flag;
+    newVal->bestMove = val.bestMove;
+    if((*tt).count(key) == 0)
+        (*tt)[key] = newVal;
 }
 
 //contains a random value for each color in each position to be used for hashing
@@ -325,7 +338,7 @@ void Position::evaluate(){
     eval -= ycount * scoreCenter;
 }
 
-vector<Position*>* Position::children(int firstMove) {
+vector<Position*>* Position::children(uint8_t firstMove) {
     vector<Position*>* output = new vector<Position*>();
 
     //default order of columns: middle first, then alternate outwards
@@ -333,7 +346,7 @@ vector<Position*>* Position::children(int firstMove) {
 
     //if firstMove is specified, create a new order
     vector<int> finalOrder;
-    if (firstMove != -1) {
+    if (firstMove != 255) {
         finalOrder.push_back(firstMove); //first move first
         for (int col : colOrder) {
             if (col != firstMove) {
@@ -349,6 +362,10 @@ vector<Position*>* Position::children(int firstMove) {
         if (count < 6) {
             Position* newPos = new Position(rboard, yboard);
             newPos->hash = hash;
+            if (col < 0 || col >= 7) {
+                std::cerr << "Invalid child: col=" << col << "\n";
+                assert(false);
+            }
             newPos->playMove(col);
             output->push_back(newPos);
         }
@@ -361,50 +378,71 @@ vector<Position*>* Position::children(int firstMove) {
 //alpha is best score possible so far for maximizing player (red) at this level
 //beta is best score possible so far for minimizing player (yellow) at this level
 //minimax returns the best possible score that can be achieved for a given player from this position
-int minimax(Position* pos, int depth, bool isMaximizingPlayer, double alpha, double beta){
-    double alphaOrig = alpha;
-    double betaOrig = beta;
-    //calling children() auto updates the hash of each child
-    uint64_t hash = pos->hash;
+struct MinimaxParams{ //used to store params on heap to lower stack memory usage
+    //params passed
+    Position* pos;
+    int depth;
+    bool isMaximizingPlayer; 
+    int alpha;
+    int beta;
 
+    //function stack vars used during minimax()
+    int alphaOrig;
+    int betaOrig;
+    TTEntry* e;
+    int bestMove;
+    int currentBest;
+
+    MinimaxParams(Position* pos, int depth, bool isMaximizingPlayer, int alpha, int beta){
+        this->pos = pos;
+        this->depth = depth;
+        this->isMaximizingPlayer = isMaximizingPlayer;
+        this->alpha = alpha;
+        this->beta = beta;
+    }
+};
+int minimax(MinimaxParams* params){
+//    print_stack_usage();
+    params->alphaOrig = params->alpha;
+    params->betaOrig = params->beta;
     //check in TT for this position
-    TTEntry e = readTT(hash);
+    params->e = readTT(params->pos->hash);
     //use this entry only if it is for the same position as me, and if its depth is not lower than mine
     //make sure depth is not lower than mine because if my depth is higher, the search that put this entry into the table did not go deep enough to ensure i will get the same score if i search for myself
-    bool canUseThisEntry = e.key == hash && e.depth >= depth;
-    if (canUseThisEntry){
+    //bool canUseThisEntry = e != nullptr && e->key == params->pos->hash && e->depth >= params->depth;
+    if (params->e != nullptr && params->e->key == params->pos->hash && params->e->depth >= params->depth){
         //if we have already done exactly this, just stop the search down the tree and return the previously calculated score
-        if (e.flag == EXACT) {
-            return e.score;
+        if (params->e->flag == EXACT) {
+            return params->e->score;
         }
         //need to set alpha and not return because the search that put this entry in did not complete the search for this position, it was pruned
-        if (e.flag == LOWERBOUND) {
-            alpha = max(alpha, e.score);
+        if (params->e->flag == LOWERBOUND) {
+            params->alpha = max(params->alpha, params->e->score);
         }
         //need to set beta, same explanation as alpha
-        if (e.flag == UPPERBOUND) {
-            beta = min(beta, e.score);
+        if (params->e->flag == UPPERBOUND) {
+            params->beta = min(params->beta, params->e->score);
         }
         //prune condition
-        if (alpha >= beta) {
-            return e.score; //cutoff
+        if (params->alpha >= params->beta) {
+            return params->e->score; //cutoff
         }
     }
     
     //if we are at a leaf, return the static eval because we cant make any moves from here
-    if(depth == 0 || detectWin(pos->rboard) || detectWin(pos->yboard)){
-        pos->evaluate();
-        return pos->eval;
+    if(params->depth == 0 || detectWin(params->pos->rboard) || detectWin(params->pos->yboard)){
+        params->pos->evaluate();
+        return params->pos->eval;
     }
 
-    int bestMove = -1;
+    params->bestMove = 255;
     vector<Position*>* children;
     //if the table entry has a best move, check that first
-    if(e.bestMove != -1){
-        children = pos->children(e.bestMove);
+    if(params->e!=nullptr && params->e->bestMove != 255){
+        children = params->pos->children(params->e->bestMove);
     }
     else{ //otherwise go check center outwards
-        children = pos->children();
+        children = params->pos->children();
     }
 
     //if the board is full, but there are no wins, return 0 for tie (cant be a win if the code reaches this point due to above return)
@@ -412,79 +450,84 @@ int minimax(Position* pos, int depth, bool isMaximizingPlayer, double alpha, dou
         return 0;
     }
 
-    double currentBest;
+    //int currentBest;
 
-    if(isMaximizingPlayer){
-        currentBest = -INF;
+    if(params->isMaximizingPlayer){
+        params->currentBest = -INF;
         //for every child
         for(Position* child : *children){
             //minimax it
-            double childMinimax = minimax(child, depth-1, !isMaximizingPlayer, alpha, beta);
+            MinimaxParams* p = new MinimaxParams(child, params->depth-1, !params->isMaximizingPlayer, params->alpha, params->beta);
+            int childMinimax = minimax(p);
+            delete p; 
             //check the minimax against the current best and keep the best
-            if(childMinimax > currentBest){
-                currentBest = childMinimax;
-                bestMove = child->mostRecentMove;
+            if(childMinimax > params->currentBest){
+                params->currentBest = childMinimax;
+                params->bestMove = child->mostRecentMove;
             }
             
-            alpha = max(alpha, childMinimax);
-            if(beta <= alpha){ //prune the rest
+            params->alpha = max(params->alpha, childMinimax);
+            if(params->beta <= params->alpha){ //prune the rest
                 break;
             }
         }
     }
     else{ //minimizing player
-        currentBest = INF;
+        params->currentBest = INF;
         //for every child
         for(Position* child : *children){
             //minimax it
-            double childMinimax = minimax(child, depth-1, !isMaximizingPlayer, alpha, beta);
+            MinimaxParams* p = new MinimaxParams(child, params->depth-1, !params->isMaximizingPlayer, params->alpha, params->beta);
+            int childMinimax = minimax(p);
+            delete p;
             //check the minimax against the current best and keep the best
-            if(childMinimax < currentBest){
-                currentBest = childMinimax;
-                bestMove = child->mostRecentMove;
+            if(childMinimax < params->currentBest){
+                params->currentBest = childMinimax;
+                params->bestMove = child->mostRecentMove;
             }
             
-            beta = min(beta, childMinimax);
-            if(beta <= alpha){ //prune the rest
+            params->beta = min(params->beta, childMinimax);
+            if(params->beta <= params->alpha){ //prune the rest
                 break;
             }
         }
     }
 
     TTEntry newE;
-    newE.key = hash;
-    newE.depth = depth;
-    newE.bestMove = bestMove;
+    newE.key = params->pos->hash;
+    newE.depth = params->depth;
+    newE.bestMove = params->bestMove;
 
-    if(currentBest <= alphaOrig){
+    if(params->currentBest <= params->alphaOrig){
         newE.flag = UPPERBOUND;
     } 
-    else if(currentBest >= betaOrig){
+    else if(params->currentBest >= params->betaOrig){
         newE.flag = LOWERBOUND;
     }
     else{
         newE.flag = EXACT;
     }
 
-    newE.score = currentBest;
-    writeTT(hash, newE);
+    newE.score = params->currentBest;
+    writeTT(params->pos->hash, newE);
 
-    return currentBest;
+    return params->currentBest;
 }
 
 int pickBestMoveFromRootTT(uint64_t rootHash) {
-
-    TTEntry e = readTT(rootHash); //get TT entry for root
-    if (e.key != rootHash) {
+    TTEntry* e = readTT(rootHash); //get TT entry for root
+    if (e->key != rootHash) {
         return -1; //TT might be empty
     }
-    return e.bestMove; //move with best score
+    return e->bestMove; //move with best score
 }
 
 void threadWorker(int threadID, Position &root, int maxDepth, bool isMaximizingPlayer) {
     //each thread runs minimax from the root at depths up to the desired depth
     for (int depth = 1; depth <= maxDepth; depth++) {
-        minimax(&root, depth, isMaximizingPlayer, -INF, INF);
+        MinimaxParams* params = new MinimaxParams(&root, depth, isMaximizingPlayer, -INF, INF);
+        minimax(params);
+        delete params;
     }
 }
 
@@ -506,7 +549,7 @@ int bestMove(Position pos, int depth){
 
     //return the best move found by the threads
     //check TT for best move of hash of root position
-    return readTT(pos.hash).bestMove;
+    return pickBestMoveFromRootTT(pos.hash);
 }
 
 void Position::initHash(){
@@ -523,13 +566,13 @@ void Position::initHash(){
 
 int main(int argc, char* argv[]){
     //settings
-    
-    int depth = stoi(argv[2]);
     bool printRuntime = false;
     bool printBoard = false;
 
     //start time
     auto start = std::chrono::high_resolution_clock::now();
+
+    int depth = stoi(argv[2]);
 
     Position pos;
 

@@ -334,7 +334,7 @@ function simulate(){
         if(turn === 'gold' && !aiThinking){
             aiThinking = true;
             (async () => {
-                let result = await runExe(moves, 10);
+                let result = await runExe(moves, 11);
                 result = result.trim(); //remove newlines and spaces
                 playMove(result);
                 aiThinking = false;
