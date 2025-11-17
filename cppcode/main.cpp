@@ -210,8 +210,8 @@ void Position::evaluate(){
 
     eval = 0;
 
-    const int score3 = 50;
-    const int score2 = 10;
+    const int score3 = 10000;
+    const int score2 = 100;
     const int scoreCenter = 10;
 
     //check for 2 or 3 in a 4 long segment without the other player involved
@@ -415,6 +415,7 @@ Position* mirrorPos(Position* pos) {
 // };
 
 int mirrorMove(int col) {
+    if(col == 255) return 255;
     return 6 - col; //mirror across center column
 }
 
@@ -432,6 +433,53 @@ TTEntry* readTTOrMirror(Position* pos, Position* mirPos){
         return eCopy;
     }
     return nullptr;
+}
+
+int Position::canWinNextMove(){
+    int myColor = colorToMove();
+    BOARD myBoard = (myColor == RED) ? rboard : yboard;
+
+    for (int col = 0; col < 7; col++) {
+        int row = rowOfNewPieceInCol(col);
+        if (row == -1) continue; // column full
+
+        // Temporarily add your piece
+        myBoard = setBitAtIndex(myBoard, 1, getBitIndex(row, col));
+
+        // Check if it creates a win
+        if (detectWin(myBoard)) {
+            return col; // you can win here
+        }
+
+        // Undo the move
+        myBoard = setBitAtIndex(myBoard, 0, getBitIndex(row, col));
+    }
+
+    return -1; // no immediate winning move
+}
+
+int Position::opponentCanWinNextMove() {
+    int myColor = colorToMove();
+    int opColor = (myColor == RED) ? YELLOW : RED;
+    BOARD oppBoard = (opColor == RED) ? rboard : yboard;
+
+    for (int col = 0; col < 7; col++) {
+        int row = rowOfNewPieceInCol(col);
+        if (row == -1) continue; // column full
+
+        // Temporarily add opponent's piece
+        oppBoard = setBitAtIndex(oppBoard, 1, getBitIndex(row, col));
+
+        // Check if it creates a win
+        if (detectWin(oppBoard)) {
+            return col; // opponent can win here
+        }
+
+        // Undo the move
+        oppBoard = setBitAtIndex(oppBoard, 0, getBitIndex(row, col));
+    }
+
+    return -1; // no immediate winning move
 }
 
 //alpha-beta pruning works by maintaining a search window [alpha, beta)

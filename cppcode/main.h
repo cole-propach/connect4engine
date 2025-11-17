@@ -32,6 +32,8 @@ struct Position{
     void evaluate();
     bool isLegalMove(int col);
     void initHash();
+    int opponentCanWinNextMove();
+    int canWinNextMove();
     std::vector<Position*>* children(uint8_t firstMove = 255);
 };
 
