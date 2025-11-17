@@ -374,75 +374,112 @@ vector<Position*>* Position::children(uint8_t firstMove) {
     return output;
 }
 
+const BOARD COL_MASK[7] = {
+    0x7FULL << (0*7), // column 0
+    0x7FULL << (1*7), // column 1
+    0x7FULL << (2*7), // column 2
+    0x7FULL << (3*7), // column 3
+    0x7FULL << (4*7), // column 4
+    0x7FULL << (5*7), // column 5
+    0x7FULL << (6*7)  // column 6
+};
+
+BOARD mirrorBoard(BOARD board) {
+    BOARD mirrored = 0;
+    for (int c = 0; c < 7; ++c) {
+        int mirrorCol = 6 - c;
+        BOARD colBits = board & COL_MASK[c];
+        int shift = (mirrorCol - c) * 7;
+        if (shift > 0)
+            mirrored |= colBits << shift;
+        else
+            mirrored |= colBits >> -shift;
+    }
+    return mirrored;
+}
+
+Position* mirrorPos(Position* pos) {
+    Position* mirrored = new Position();
+    mirrored->rboard = mirrorBoard(pos->rboard);
+    mirrored->yboard = mirrorBoard(pos->yboard);
+    mirrored->initHash();
+    return mirrored;
+}
+
+// struct TTEntry {
+//     uint64_t key;      //zobrist hash to verify match
+//     int depth;         //depth of stored search
+//     int score;         //score from minimax
+//     uint8_t flag;      //EXACT, LOWERBOUND, UPPERBOUND
+//     uint8_t bestMove;  //best move for ordering
+// };
+
+int mirrorMove(int col) {
+    return 6 - col; //mirror across center column
+}
+
+TTEntry* readTTOrMirror(Position* pos, Position* mirPos){
+    TTEntry* e = readTT(pos->hash);
+    TTEntry* eMir = readTT(mirPos->hash);
+
+    if(e != nullptr){
+        return e;
+    }
+    else if(eMir != nullptr){
+        //return a TTEntry that has been mirrored
+        TTEntry* eCopy = new TTEntry(*eMir);
+        eCopy->bestMove = mirrorMove(eCopy->bestMove);
+        return eCopy;
+    }
+    return nullptr;
+}
+
 //alpha-beta pruning works by maintaining a search window [alpha, beta)
 //alpha is best score possible so far for maximizing player (red) at this level
 //beta is best score possible so far for minimizing player (yellow) at this level
 //minimax returns the best possible score that can be achieved for a given player from this position
-struct MinimaxParams{ //used to store params on heap to lower stack memory usage
-    //params passed
-    Position* pos;
-    int depth;
-    bool isMaximizingPlayer; 
-    int alpha;
-    int beta;
-
-    //function stack vars used during minimax()
-    int alphaOrig;
-    int betaOrig;
-    TTEntry* e;
-    int bestMove;
-    int currentBest;
-
-    MinimaxParams(Position* pos, int depth, bool isMaximizingPlayer, int alpha, int beta){
-        this->pos = pos;
-        this->depth = depth;
-        this->isMaximizingPlayer = isMaximizingPlayer;
-        this->alpha = alpha;
-        this->beta = beta;
-    }
-};
-int minimax(MinimaxParams* params){
-//    print_stack_usage();
-    params->alphaOrig = params->alpha;
-    params->betaOrig = params->beta;
-    //check in TT for this position
-    params->e = readTT(params->pos->hash);
+int minimax(Position* pos, int depth, bool isMaximizingPlayer, int alpha, int beta){
+    int alphaOrig = alpha;
+    int betaOrig = beta;
+    //check in TT for this position or its mirror
+    Position* mirPos = mirrorPos(pos);
+    TTEntry* e = readTTOrMirror(pos, mirPos);
     //use this entry only if it is for the same position as me, and if its depth is not lower than mine
     //make sure depth is not lower than mine because if my depth is higher, the search that put this entry into the table did not go deep enough to ensure i will get the same score if i search for myself
-    //bool canUseThisEntry = e != nullptr && e->key == params->pos->hash && e->depth >= params->depth;
-    if (params->e != nullptr && params->e->key == params->pos->hash && params->e->depth >= params->depth){
+    bool canUseThisEntry = e != nullptr && e->key == pos->hash && e->depth >= depth;
+    if (canUseThisEntry){
         //if we have already done exactly this, just stop the search down the tree and return the previously calculated score
-        if (params->e->flag == EXACT) {
-            return params->e->score;
+        if (e->flag == EXACT) {
+            return e->score;
         }
         //need to set alpha and not return because the search that put this entry in did not complete the search for this position, it was pruned
-        if (params->e->flag == LOWERBOUND) {
-            params->alpha = max(params->alpha, params->e->score);
+        if (e->flag == LOWERBOUND) {
+            alpha = max(alpha, e->score);
         }
         //need to set beta, same explanation as alpha
-        if (params->e->flag == UPPERBOUND) {
-            params->beta = min(params->beta, params->e->score);
+        if (e->flag == UPPERBOUND) {
+            beta = min(beta, e->score);
         }
         //prune condition
-        if (params->alpha >= params->beta) {
-            return params->e->score; //cutoff
+        if (alpha >= beta) {
+            return e->score; //cutoff
         }
     }
     
     //if we are at a leaf, return the static eval because we cant make any moves from here
-    if(params->depth == 0 || detectWin(params->pos->rboard) || detectWin(params->pos->yboard)){
-        params->pos->evaluate();
-        return params->pos->eval;
+    if(depth == 0 || detectWin(pos->rboard) || detectWin(pos->yboard)){
+        pos->evaluate();
+        return pos->eval;
     }
 
-    params->bestMove = 255;
+    int bestMove = 255;
     vector<Position*>* children;
     //if the table entry has a best move, check that first
-    if(params->e!=nullptr && params->e->bestMove != 255){
-        children = params->pos->children(params->e->bestMove);
+    if(e!=nullptr && e->bestMove != 255){
+        children = pos->children(e->bestMove);
     }
     else{ //otherwise go check center outwards
-        children = params->pos->children();
+        children = pos->children();
     }
 
     //if the board is full, but there are no wins, return 0 for tie (cant be a win if the code reaches this point due to above return)
@@ -450,68 +487,90 @@ int minimax(MinimaxParams* params){
         return 0;
     }
 
-    //int currentBest;
+    int currentBest;
 
-    if(params->isMaximizingPlayer){
-        params->currentBest = -INF;
+    if(isMaximizingPlayer){
+        currentBest = -INF;
         //for every child
         for(Position* child : *children){
             //minimax it
-            MinimaxParams* p = new MinimaxParams(child, params->depth-1, !params->isMaximizingPlayer, params->alpha, params->beta);
-            int childMinimax = minimax(p);
-            delete p; 
+            int childMinimax = minimax(child, depth-1, !isMaximizingPlayer, alpha, beta);
             //check the minimax against the current best and keep the best
-            if(childMinimax > params->currentBest){
-                params->currentBest = childMinimax;
-                params->bestMove = child->mostRecentMove;
+            if(childMinimax > currentBest){
+                currentBest = childMinimax;
+                bestMove = child->mostRecentMove;
             }
             
-            params->alpha = max(params->alpha, childMinimax);
-            if(params->beta <= params->alpha){ //prune the rest
+            alpha = max(alpha, childMinimax);
+            if(beta <= alpha){ //prune the rest
                 break;
             }
         }
     }
     else{ //minimizing player
-        params->currentBest = INF;
+        currentBest = INF;
         //for every child
         for(Position* child : *children){
             //minimax it
-            MinimaxParams* p = new MinimaxParams(child, params->depth-1, !params->isMaximizingPlayer, params->alpha, params->beta);
-            int childMinimax = minimax(p);
-            delete p;
+            int childMinimax = minimax(child, depth-1, !isMaximizingPlayer, alpha, beta);
             //check the minimax against the current best and keep the best
-            if(childMinimax < params->currentBest){
-                params->currentBest = childMinimax;
-                params->bestMove = child->mostRecentMove;
+            if(childMinimax < currentBest){
+                currentBest = childMinimax;
+                bestMove = child->mostRecentMove;
             }
             
-            params->beta = min(params->beta, childMinimax);
-            if(params->beta <= params->alpha){ //prune the rest
+            beta = min(beta, childMinimax);
+            if(beta <= alpha){ //prune the rest
                 break;
             }
         }
     }
 
-    TTEntry newE;
-    newE.key = params->pos->hash;
-    newE.depth = params->depth;
-    newE.bestMove = params->bestMove;
+    for (Position* child : *children) {
+        delete child; // delete each Position*
+    }
+    delete children; // delete the vector itself
 
-    if(params->currentBest <= params->alphaOrig){
+    //make table entry
+    TTEntry newE;
+    newE.key = pos->hash;
+    newE.depth = depth;
+    newE.bestMove = bestMove;
+
+    if(currentBest <= alphaOrig){
         newE.flag = UPPERBOUND;
     } 
-    else if(params->currentBest >= params->betaOrig){
+    else if(currentBest >= betaOrig){
         newE.flag = LOWERBOUND;
     }
     else{
         newE.flag = EXACT;
     }
 
-    newE.score = params->currentBest;
-    writeTT(params->pos->hash, newE);
+    newE.score = currentBest;
+    writeTT(pos->hash, newE); //write it to table
 
-    return params->currentBest;
+    //make mirrored table entry
+    newE.key = mirPos->hash;
+    newE.depth = depth;
+    newE.bestMove = mirrorMove(bestMove);
+
+    if(currentBest <= alphaOrig){
+        newE.flag = UPPERBOUND;
+    } 
+    else if(currentBest >= betaOrig){
+        newE.flag = LOWERBOUND;
+    }
+    else{
+        newE.flag = EXACT;
+    }
+
+    newE.score = currentBest;
+    writeTT(mirPos->hash, newE); //write it to table
+
+    delete mirPos;
+
+    return currentBest;
 }
 
 int pickBestMoveFromRootTT(uint64_t rootHash) {
@@ -525,9 +584,7 @@ int pickBestMoveFromRootTT(uint64_t rootHash) {
 void threadWorker(int threadID, Position &root, int maxDepth, bool isMaximizingPlayer) {
     //each thread runs minimax from the root at depths up to the desired depth
     for (int depth = 1; depth <= maxDepth; depth++) {
-        MinimaxParams* params = new MinimaxParams(&root, depth, isMaximizingPlayer, -INF, INF);
-        minimax(params);
-        delete params;
+        minimax(&root, depth, isMaximizingPlayer, -INF, INF);
     }
 }
 
