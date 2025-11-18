@@ -5,7 +5,7 @@
 
 #define BOARD uint64_t
 
-#define INF 9999999 //almost 10 million
+#define INF 99999999 //almost 100 million
 
 enum{
     RED, YELLOW
@@ -15,7 +15,7 @@ struct Position{
     BOARD rboard;
     BOARD yboard;
     int eval;
-    BOARD hash;
+    uint64_t hash;
     int mostRecentMove;
 
     Position(BOARD rboard = 0, BOARD yboard = 0){
@@ -42,9 +42,11 @@ enum{
 };
 
 struct TTEntry {
-    uint64_t key;      //zobrist hash to verify match
+    BOARD rboard;
+    BOARD yboard;
     int depth;         //depth of stored search
     int score;         //score from minimax
     uint8_t flag;      //EXACT, LOWERBOUND, UPPERBOUND
     uint8_t bestMove;  //best move for ordering
+    void print();
 };

@@ -81,6 +81,9 @@
         "__node_handle": "cpp",
         "execution": "cpp",
         "list": "cpp",
-        "xhash": "cpp"
+        "xhash": "cpp",
+        "coroutine": "cpp",
+        "resumable": "cpp",
+        "forward_list": "cpp"
     }
 }

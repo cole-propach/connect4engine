@@ -20,22 +20,23 @@ unordered_map<BOARD, TTEntry*>* tt = new unordered_map<BOARD, TTEntry*>();
 
 mutex TTmtx;
 
-TTEntry* readTT(BOARD key){
+pair<TTEntry, bool> readTT(BOARD key){
     lock_guard<mutex> lock(TTmtx);
     auto it = tt->find(key);
     if(it != tt->end()){
-        return it->second;  //return the entry if found
+        return {*it->second, true};  //return the entry if found
     }
     else{
         //handle the case where the key is not found
-        return nullptr;
+        return {TTEntry() , false};
     }
 }
 
-void writeTT(BOARD key, TTEntry& val){
+void writeTT(BOARD key, TTEntry val){
     lock_guard<mutex> lock(TTmtx);
     TTEntry* newVal = new TTEntry();
-    newVal->key = val.key;
+    newVal->rboard = val.rboard;
+    newVal->yboard = val.yboard;
     newVal->depth = val.depth;
     newVal->score = val.score;
     newVal->flag = val.flag;
@@ -59,6 +60,36 @@ void initZobrist() {
                 zobrist[col][row][color] = dist(gen);
             }
         }
+    }
+}
+void TTEntry::print(){
+    Position printPos = Position(rboard, yboard);
+    printPos.printBoard();
+    std::cout << "TTEntry {\n";
+    std::cout << "  rboard   = 0x" << std::hex << rboard << std::dec << "\n";
+    std::cout << "  yboard   = 0x" << std::hex << yboard << std::dec << "\n";
+    std::cout << "  depth    = " << depth << "\n";
+    std::cout << "  score    = " << score << "\n";
+    std::cout << "  flag     = " << static_cast<int>(flag) << "\n";
+    std::cout << "  bestMove = " << static_cast<int>(bestMove) << "\n";
+    std::cout << "}\n";
+}
+
+void printTT(const unordered_map<BOARD, TTEntry*>* tt) {
+    std::cout << "=== Transposition Table (" << tt->size() << " entries) ===\n";
+
+    for (const auto& pair : *tt) {
+        BOARD key = pair.first;
+        TTEntry* entry = pair.second;
+
+        std::cout << "Key (hash) = 0x" << std::hex << key << std::dec << "\n";
+        if (entry) {
+            entry->print();
+        } else {
+            std::cout << "  (null entry)\n";
+        }
+
+        std::cout << "---------------------------------------\n";
     }
 }
 
@@ -195,148 +226,163 @@ bool Position::isLegalMove(int col){
     return count < 6;
 }
 
+int Position::canWinNextMove(){
+    int myColor = colorToMove();
+    BOARD myBoard = (myColor == RED) ? rboard : yboard;
+
+    for (int col = 0; col < 7; col++) {
+        int row = rowOfNewPieceInCol(col);
+        if (row == -1) continue; // column full
+
+        // Temporarily add your piece
+        myBoard = setBitAtIndex(myBoard, 1, getBitIndex(row, col));
+
+        // Check if it creates a win
+        if (detectWin(myBoard)) {
+            return col; // you can win here
+        }
+
+        // Undo the move
+        myBoard = setBitAtIndex(myBoard, 0, getBitIndex(row, col));
+    }
+
+    return -1; // no immediate winning move
+}
+
+int Position::opponentCanWinNextMove() {
+    int myColor = colorToMove();
+    int opColor = (myColor == RED) ? YELLOW : RED;
+    BOARD oppBoard = (opColor == RED) ? rboard : yboard;
+
+    for (int col = 0; col < 7; col++) {
+        int row = rowOfNewPieceInCol(col);
+        if (row == -1) continue; // column full
+
+        // Temporarily add opponent's piece
+        oppBoard = setBitAtIndex(oppBoard, 1, getBitIndex(row, col));
+
+        // Check if it creates a win
+        if (detectWin(oppBoard)) {
+            return col; // opponent can win here
+        }
+
+        // Undo the move
+        oppBoard = setBitAtIndex(oppBoard, 0, getBitIndex(row, col));
+    }
+
+    return -1; // no immediate winning move
+}
+
+#include <cstdint>
+#include <limits>
+
 void Position::evaluate(){
-    //check if the position is already won
-    //red win = +inf
-    //yellow win = -inf
-    if(detectWin(rboard)){
+    // quick terminal checks
+    int myColor = colorToMove();
+    if (detectWin(rboard)) {
         eval = INF;
         return;
     }
-    else if(detectWin(yboard)){
+    else if (detectWin(yboard)) {
         eval = -INF;
         return;
     }
+    // else if (canWinNextMove() != -1){
+    //     eval = (myColor == RED) ? 100000 : -100000;
+    //     return;
+    // }
+    // else if (opponentCanWinNextMove() != -1){
+    //     eval = (myColor == RED) ? -50000 : 50000;
+    //     return;
+    // }
 
-    eval = 0;
+    // base score
+    int score = 0;
 
     const int score3 = 10000;
     const int score2 = 100;
     const int scoreCenter = 10;
 
-    //check for 2 or 3 in a 4 long segment without the other player involved
-    //check every horizontal window 4 long
-    for(int row = 0; row < 6; row++){
-        for(int col = 0; col < 4; col++){
-            char rwindow = 0; //first 4 bits are the window
-            char ywindow = 0;
-            for(int i = 0; i < 4; i++){
+    // helper to score a window (4 bits in a small integer)
+    auto score_window = [&](unsigned rwin, unsigned ywin){
+        unsigned rcount = __builtin_popcount(rwin);
+        unsigned ycount = __builtin_popcount(ywin);
+
+        if (rcount > 0 && ycount == 0) {
+            if (rcount == 3) score += score3;
+            else if (rcount == 2) score += score2;
+        } else if (ycount > 0 && rcount == 0) {
+            if (ycount == 3) score -= score3;
+            else if (ycount == 2) score -= score2;
+        }
+    };
+
+    // horizontal windows
+    for (int row = 0; row < 6; ++row){
+        for (int col = 0; col < 4; ++col){
+            uint8_t rwindow = 0;
+            uint8_t ywindow = 0;
+            for (int i = 0; i < 4; ++i){
+                // getBit should return 0 or 1
                 rwindow = setBitAtIndex(rwindow, getBit(rboard, row, col+i), i);
                 ywindow = setBitAtIndex(ywindow, getBit(yboard, row, col+i), i);
             }
-            int rcount = __builtin_popcountll(rwindow);
-            int ycount = __builtin_popcountll(ywindow);
-            //if that window contains any red pieces and no yellow pieces
-            if(rcount > 0 && ycount == 0){
-                //if that window contains 3 red pieces, add to score
-                eval += (rcount == 3) ? score3 : 0;
-                //else if that window contains 2 red pieces, add less to score
-                eval += (rcount == 2) ? score2 : 0;
-            }
-            //else if that window contains any yellow pieces and no red pieces
-            else if(ycount > 0 && rcount == 0){
-                //if that window contains 3 yellow pieces, subtract from score
-                eval += (ycount == 3) ? 0-score3 : 0;
-                //else if that window contains 2 yellow pieces, subtract less from score
-                eval += (ycount == 2) ? 0-score2 : 0;
-            }
+            score_window((unsigned)rwindow, (unsigned)ywindow);
         }
     }
-    
-    //do the exact same for vertical
-    for(int row = 0; row < 3; row++){
-        for(int col = 0; col < 7; col++){
-            char rwindow = 0; //first 4 bits are the window
-            char ywindow = 0;
-            for(int i = 0; i < 4; i++){
+
+    // vertical windows
+    for (int row = 0; row < 3; ++row){
+        for (int col = 0; col < 7; ++col){
+            uint8_t rwindow = 0;
+            uint8_t ywindow = 0;
+            for (int i = 0; i < 4; ++i){
                 rwindow = setBitAtIndex(rwindow, getBit(rboard, row+i, col), i);
                 ywindow = setBitAtIndex(ywindow, getBit(yboard, row+i, col), i);
             }
-            int rcount = __builtin_popcountll(rwindow);
-            int ycount = __builtin_popcountll(ywindow);
-            //if that window contains any red pieces and no yellow pieces
-            if(rcount > 0 && ycount == 0){
-                //if that window contains 3 red pieces, add to score
-                eval += (rcount == 3) ? score3 : 0;
-                //else if that window contains 2 red pieces, add less to score
-                eval += (rcount == 2) ? score2 : 0;
-            }
-            //else if that window contains any yellow pieces and no red pieces
-            else if(ycount > 0 && rcount == 0){
-                //if that window contains 3 yellow pieces, subtract from score
-                eval += (ycount == 3) ? 0-score3 : 0;
-                //else if that window contains 2 yellow pieces, subtract less from score
-                eval += (ycount == 2) ? 0-score2 : 0;
-            }
+            score_window((unsigned)rwindow, (unsigned)ywindow);
         }
     }
 
-    //do the exact same for / diagonal
-    for(int row = 0; row < 3; row++){
-        for(int col = 0; col < 4; col++){
-            char rwindow = 0; //first 4 bits are the window
-            char ywindow = 0;
-            for(int i = 0; i < 4; i++){
+    // / diagonal (down-right)
+    for (int row = 0; row < 3; ++row){
+        for (int col = 0; col < 4; ++col){
+            uint8_t rwindow = 0;
+            uint8_t ywindow = 0;
+            for (int i = 0; i < 4; ++i){
                 rwindow = setBitAtIndex(rwindow, getBit(rboard, row+i, col+i), i);
                 ywindow = setBitAtIndex(ywindow, getBit(yboard, row+i, col+i), i);
             }
-            int rcount = __builtin_popcountll(rwindow);
-            int ycount = __builtin_popcountll(ywindow);
-            //if that window contains any red pieces and no yellow pieces
-            if(rcount > 0 && ycount == 0){
-                //if that window contains 3 red pieces, add to score
-                eval += (rcount == 3) ? score3 : 0;
-                //else if that window contains 2 red pieces, add less to score
-                eval += (rcount == 2) ? score2 : 0;
-            }
-            //else if that window contains any yellow pieces and no red pieces
-            else if(ycount > 0 && rcount == 0){
-                //if that window contains 3 yellow pieces, subtract from score
-                eval += (ycount == 3) ? 0-score3 : 0;
-                //else if that window contains 2 yellow pieces, subtract less from score
-                eval += (ycount == 2) ? 0-score2 : 0;
-            }
+            score_window((unsigned)rwindow, (unsigned)ywindow);
         }
     }
 
-    //do the exact same for \ diagonal
-    for(int row = 0; row < 3; row++){
-        for(int col = 3; col < 7; col++){
-            char rwindow = 0; //first 4 bits are the window
-            char ywindow = 0;
-            for(int i = 0; i < 4; i++){
+    // \ diagonal (down-left)
+    for (int row = 0; row < 3; ++row){
+        for (int col = 3; col < 7; ++col){
+            uint8_t rwindow = 0;
+            uint8_t ywindow = 0;
+            for (int i = 0; i < 4; ++i){
                 rwindow = setBitAtIndex(rwindow, getBit(rboard, row+i, col-i), i);
                 ywindow = setBitAtIndex(ywindow, getBit(yboard, row+i, col-i), i);
             }
-            int rcount = __builtin_popcountll(rwindow);
-            int ycount = __builtin_popcountll(ywindow);
-            //if that window contains any red pieces and no yellow pieces
-            if(rcount > 0 && ycount == 0){
-                //if that window contains 3 red pieces, add to score
-                eval += (rcount == 3) ? score3 : 0;
-                //else if that window contains 2 red pieces, add less to score
-                eval += (rcount == 2) ? score2 : 0;
-            }
-            //else if that window contains any yellow pieces and no red pieces
-            else if(ycount > 0 && rcount == 0){
-                //if that window contains 3 yellow pieces, subtract from score
-                eval += (ycount == 3) ? 0-score3 : 0;
-                //else if that window contains 2 yellow pieces, subtract less from score
-                eval += (ycount == 2) ? 0-score2 : 0;
-            }
+            score_window((unsigned)rwindow, (unsigned)ywindow);
         }
     }
 
-    //give bonus points for every piece in the center column
-    unsigned char rmid = getColumn(rboard, 3);
-    unsigned char ymid = getColumn(yboard, 3);
+    // center column bonus
+    uint8_t rmid = getColumn(rboard, 3);
+    uint8_t ymid = getColumn(yboard, 3);
+    score += __builtin_popcount((unsigned)rmid) * scoreCenter;
+    score -= __builtin_popcount((unsigned)ymid) * scoreCenter;
 
-    int rcount = __builtin_popcountll(rmid);
-    int ycount = __builtin_popcountll(ymid);
+    // clamp to INF bounds (avoid overflow)
+    if (score > INF) score = INF;
+    if (score < -INF) score = -INF;
 
-    eval += rcount * scoreCenter;
-    eval -= ycount * scoreCenter;
+    eval = static_cast<int>(score);
 }
+
 
 vector<Position*>* Position::children(uint8_t firstMove) {
     vector<Position*>* output = new vector<Position*>();
@@ -346,7 +392,7 @@ vector<Position*>* Position::children(uint8_t firstMove) {
 
     //if firstMove is specified, create a new order
     vector<int> finalOrder;
-    if (firstMove != 255) {
+    if (firstMove <= 6 && firstMove >= 0) {
         finalOrder.push_back(firstMove); //first move first
         for (int col : colOrder) {
             if (col != firstMove) {
@@ -419,82 +465,38 @@ int mirrorMove(int col) {
     return 6 - col; //mirror across center column
 }
 
-TTEntry* readTTOrMirror(Position* pos, Position* mirPos){
-    TTEntry* e = readTT(pos->hash);
-    TTEntry* eMir = readTT(mirPos->hash);
+pair<TTEntry, bool> readTTOrMirror(Position* pos, Position* mirPos){
+    auto e = readTT(pos->hash);
+    auto eMir = readTT(mirPos->hash);
 
-    if(e != nullptr){
-        return e;
+    if(e.second){ //if we found the entry, return it
+        return {e.first, true};
     }
-    else if(eMir != nullptr){
+    else if(eMir.second){ //if we did not find the entry, but did find its mirror, mirror the entry and return that
         //return a TTEntry that has been mirrored
-        TTEntry* eCopy = new TTEntry(*eMir);
+        TTEntry* eCopy = new TTEntry(eMir.first);
         eCopy->bestMove = mirrorMove(eCopy->bestMove);
-        return eCopy;
+        eCopy->rboard = mirrorBoard(pos->rboard);
+        eCopy->yboard = mirrorBoard(pos->yboard);
+        return {*eCopy, true};
     }
-    return nullptr;
-}
-
-int Position::canWinNextMove(){
-    int myColor = colorToMove();
-    BOARD myBoard = (myColor == RED) ? rboard : yboard;
-
-    for (int col = 0; col < 7; col++) {
-        int row = rowOfNewPieceInCol(col);
-        if (row == -1) continue; // column full
-
-        // Temporarily add your piece
-        myBoard = setBitAtIndex(myBoard, 1, getBitIndex(row, col));
-
-        // Check if it creates a win
-        if (detectWin(myBoard)) {
-            return col; // you can win here
-        }
-
-        // Undo the move
-        myBoard = setBitAtIndex(myBoard, 0, getBitIndex(row, col));
-    }
-
-    return -1; // no immediate winning move
-}
-
-int Position::opponentCanWinNextMove() {
-    int myColor = colorToMove();
-    int opColor = (myColor == RED) ? YELLOW : RED;
-    BOARD oppBoard = (opColor == RED) ? rboard : yboard;
-
-    for (int col = 0; col < 7; col++) {
-        int row = rowOfNewPieceInCol(col);
-        if (row == -1) continue; // column full
-
-        // Temporarily add opponent's piece
-        oppBoard = setBitAtIndex(oppBoard, 1, getBitIndex(row, col));
-
-        // Check if it creates a win
-        if (detectWin(oppBoard)) {
-            return col; // opponent can win here
-        }
-
-        // Undo the move
-        oppBoard = setBitAtIndex(oppBoard, 0, getBitIndex(row, col));
-    }
-
-    return -1; // no immediate winning move
+    return {TTEntry(), false};
 }
 
 //alpha-beta pruning works by maintaining a search window [alpha, beta)
 //alpha is best score possible so far for maximizing player (red) at this level
 //beta is best score possible so far for minimizing player (yellow) at this level
 //minimax returns the best possible score that can be achieved for a given player from this position
-int minimax(Position* pos, int depth, bool isMaximizingPlayer, int alpha, int beta){
-    int alphaOrig = alpha;
-    int betaOrig = beta;
+int minimax(Position* pos, int depth, int alpha, int beta){//, bool &printing){
+    bool isMaximizingPlayer = pos->colorToMove() == RED;
     //check in TT for this position or its mirror
     Position* mirPos = mirrorPos(pos);
-    TTEntry* e = readTTOrMirror(pos, mirPos);
+    pair<TTEntry, bool> readE = readTTOrMirror(pos, mirPos);
+    TTEntry* e = readE.second ? &readE.first : nullptr; 
+
     //use this entry only if it is for the same position as me, and if its depth is not lower than mine
     //make sure depth is not lower than mine because if my depth is higher, the search that put this entry into the table did not go deep enough to ensure i will get the same score if i search for myself
-    bool canUseThisEntry = e != nullptr && e->key == pos->hash && e->depth >= depth;
+    bool canUseThisEntry = e != nullptr && e->rboard == pos->rboard && e->yboard == pos->yboard && e->depth > depth;
     if (canUseThisEntry){
         //if we have already done exactly this, just stop the search down the tree and return the previously calculated score
         if (e->flag == EXACT) {
@@ -510,21 +512,23 @@ int minimax(Position* pos, int depth, bool isMaximizingPlayer, int alpha, int be
         }
         //prune condition
         if (alpha >= beta) {
-            return e->score; //cutoff
+            return e->score;
         }
     }
     
     //if we are at a leaf, return the static eval because we cant make any moves from here
     if(depth == 0 || detectWin(pos->rboard) || detectWin(pos->yboard)){
         pos->evaluate();
+        //printing = true;
         return pos->eval;
     }
 
-    int bestMove = 255;
+    int bestMove = 42;
     vector<Position*>* children;
     //if the table entry has a best move, check that first
     if(e!=nullptr && e->bestMove != 255){
         children = pos->children(e->bestMove);
+        bestMove = e->bestMove;
     }
     else{ //otherwise go check center outwards
         children = pos->children();
@@ -538,11 +542,11 @@ int minimax(Position* pos, int depth, bool isMaximizingPlayer, int alpha, int be
     int currentBest;
 
     if(isMaximizingPlayer){
-        currentBest = -INF;
+        currentBest = -INF-1;
         //for every child
         for(Position* child : *children){
             //minimax it
-            int childMinimax = minimax(child, depth-1, !isMaximizingPlayer, alpha, beta);
+            int childMinimax = minimax(child, depth-1, alpha, beta);
             //check the minimax against the current best and keep the best
             if(childMinimax > currentBest){
                 currentBest = childMinimax;
@@ -556,11 +560,11 @@ int minimax(Position* pos, int depth, bool isMaximizingPlayer, int alpha, int be
         }
     }
     else{ //minimizing player
-        currentBest = INF;
+        currentBest = INF+1;
         //for every child
         for(Position* child : *children){
             //minimax it
-            int childMinimax = minimax(child, depth-1, !isMaximizingPlayer, alpha, beta);
+            int childMinimax = minimax(child, depth-1, alpha, beta);
             //check the minimax against the current best and keep the best
             if(childMinimax < currentBest){
                 currentBest = childMinimax;
@@ -575,20 +579,21 @@ int minimax(Position* pos, int depth, bool isMaximizingPlayer, int alpha, int be
     }
 
     for (Position* child : *children) {
-        delete child; // delete each Position*
+        delete child; //delete each Position*
     }
-    delete children; // delete the vector itself
+    delete children; //delete the vector itself
 
     //make table entry
     TTEntry newE;
-    newE.key = pos->hash;
+    newE.rboard = pos->rboard;
+    newE.yboard = pos->yboard;
     newE.depth = depth;
     newE.bestMove = bestMove;
 
-    if(currentBest <= alphaOrig){
+    if(currentBest <= alpha){
         newE.flag = UPPERBOUND;
-    } 
-    else if(currentBest >= betaOrig){
+    }
+    else if(currentBest >= beta){
         newE.flag = LOWERBOUND;
     }
     else{
@@ -599,14 +604,15 @@ int minimax(Position* pos, int depth, bool isMaximizingPlayer, int alpha, int be
     writeTT(pos->hash, newE); //write it to table
 
     //make mirrored table entry
-    newE.key = mirPos->hash;
+    newE.rboard = mirrorBoard(pos->rboard);
+    newE.yboard = mirrorBoard(pos->yboard);
     newE.depth = depth;
     newE.bestMove = mirrorMove(bestMove);
 
-    if(currentBest <= alphaOrig){
+    if(currentBest <= alpha){
         newE.flag = UPPERBOUND;
     } 
-    else if(currentBest >= betaOrig){
+    else if(currentBest >= beta){
         newE.flag = LOWERBOUND;
     }
     else{
@@ -621,41 +627,46 @@ int minimax(Position* pos, int depth, bool isMaximizingPlayer, int alpha, int be
     return currentBest;
 }
 
-int pickBestMoveFromRootTT(uint64_t rootHash) {
-    TTEntry* e = readTT(rootHash); //get TT entry for root
-    if (e->key != rootHash) {
+int pickBestMoveFromRootTT(Position root) {
+    TTEntry e = readTT(root.hash).first; //get TT entry for root
+    if (e.rboard != root.rboard || e.yboard != root.yboard) {
         return -1; //TT might be empty
     }
-    return e->bestMove; //move with best score
+    return e.bestMove; //move with best score
 }
 
-void threadWorker(int threadID, Position &root, int maxDepth, bool isMaximizingPlayer) {
+void threadWorker(int threadID, Position &root, int maxDepth) {
     //each thread runs minimax from the root at depths up to the desired depth
     for (int depth = 1; depth <= maxDepth; depth++) {
-        minimax(&root, depth, isMaximizingPlayer, -INF, INF);
+        minimax(&root, depth, -INF, INF);
     }
 }
 
-int bestMove(Position pos, int depth){
-    bool isMaximizingPlayer = pos.colorToMove() == RED;
-
-    //create n new threads that will find the best move
-    int n = 8;
-    vector<thread> threads;
-    for(int i = 0; i < n; i++){
-        //need ref() for passing by ref to threads
-        threads.emplace_back(threadWorker, i, ref(pos), depth, isMaximizingPlayer);
+int bestMove(Position pos, int depth) {
+    for (int d = depth; d <= depth; d++) {
+        minimax(&pos, d, -INF, INF);
     }
-
-    //must be reference since threads cant be copied
-    for(thread &t : threads){
-        t.join();
-    }
-
-    //return the best move found by the threads
-    //check TT for best move of hash of root position
-    return pickBestMoveFromRootTT(pos.hash);
+    return pickBestMoveFromRootTT(pos);
 }
+
+// int bestMove(Position pos, int depth){
+//     //create n new threads that will find the best move
+//     int n = 8;
+//     vector<thread> threads;
+//     for(int i = 0; i < n; i++){
+//         //need ref() for passing by ref to threads
+//         threads.emplace_back(threadWorker, i, ref(pos), depth);
+//     }
+
+//     //must be reference since threads cant be copied
+//     for(thread &t : threads){
+//         t.join();
+//     }
+
+//     //return the best move found by the threads
+//     //check TT for best move of hash of root position
+//     return pickBestMoveFromRootTT(pos.hash);
+// }
 
 void Position::initHash(){
     hash = 0;
@@ -672,14 +683,14 @@ void Position::initHash(){
 int main(int argc, char* argv[]){
     //settings
     bool printRuntime = false;
-    bool printBoard = false;
+    bool printBoard = true;
 
     //start time
     auto start = std::chrono::high_resolution_clock::now();
 
     int depth = stoi(argv[2]);
 
-    Position pos;
+    Position pos = Position(0, 0);
 
     initZobrist();
     pos.initHash();
@@ -690,6 +701,8 @@ int main(int argc, char* argv[]){
     }
     cout << bestMove(pos, depth) <<'\n';
 
+    //printTT(tt);
+
     //end time
     auto end = std::chrono::high_resolution_clock::now();
 
@@ -698,3 +711,7 @@ int main(int argc, char* argv[]){
     if(printRuntime)
         cout << "Runtime: " << duration.count() << " ms\n";
 }
+
+//254554334123543263652
+//25455433412354326365
+//25455433412354326365242
