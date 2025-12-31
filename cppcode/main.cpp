@@ -15,6 +15,8 @@
 
 using namespace std;
 
+int nodeCount = 0;
+
 //zobrist uint64_t -> to TTEntry (seen in h file)
 unordered_map<BOARD, TTEntry*>* tt = new unordered_map<BOARD, TTEntry*>();
 
@@ -41,8 +43,9 @@ void writeTT(BOARD key, TTEntry val){
     newVal->score = val.score;
     newVal->flag = val.flag;
     newVal->bestMove = val.bestMove;
-    if((*tt).count(key) == 0)
-        (*tt)[key] = newVal;
+    newVal->myNodeCount = val.myNodeCount;
+    //used to be check for key value here
+    (*tt)[key] = newVal;
 }
 
 //contains a random value for each color in each position to be used for hashing
@@ -70,19 +73,24 @@ void TTEntry::print(){
     std::cout << "  yboard   = 0x" << std::hex << yboard << std::dec << "\n";
     std::cout << "  depth    = " << depth << "\n";
     std::cout << "  score    = " << score << "\n";
-    std::cout << "  flag     = " << static_cast<int>(flag) << "\n";
+    std::cout << "  flag     = " << ((static_cast<int>(flag) == 0) ? ("EXACT") : ((static_cast<int>(flag) == 1) ? ("LOWERBOUND") : ("UPPERBOUND"))) << "\n";
     std::cout << "  bestMove = " << static_cast<int>(bestMove) << "\n";
     std::cout << "}\n";
 }
 
-void printTT(const unordered_map<BOARD, TTEntry*>* tt) {
+#include <queue>
+void printTT() {
+    std::priority_queue<pair<int, TTEntry*>> pq;
     std::cout << "=== Transposition Table (" << tt->size() << " entries) ===\n";
 
     for (const auto& pair : *tt) {
-        BOARD key = pair.first;
-        TTEntry* entry = pair.second;
+        pq.push({pair.second->depth, pair.second});
+    }
 
-        std::cout << "Key (hash) = 0x" << std::hex << key << std::dec << "\n";
+    while(pq.size()){
+        auto [nodeCount, entry] = pq.top();
+        pq.pop();
+
         if (entry) {
             entry->print();
         } else {
@@ -278,7 +286,7 @@ int Position::opponentCanWinNextMove() {
 
 void Position::evaluate(){
     // quick terminal checks
-    int myColor = colorToMove();
+    //int myColor = colorToMove();
     if (detectWin(rboard)) {
         eval = INF;
         return;
@@ -487,16 +495,20 @@ pair<TTEntry, bool> readTTOrMirror(Position* pos, Position* mirPos){
 //alpha is best score possible so far for maximizing player (red) at this level
 //beta is best score possible so far for minimizing player (yellow) at this level
 //minimax returns the best possible score that can be achieved for a given player from this position
-int minimax(Position* pos, int depth, int alpha, int beta){//, bool &printing){
+int minimax(Position* pos, int depth, int alpha, int beta){
+    nodeCount++;
+    TTEntry newE;
+    newE.myNodeCount = nodeCount;
     bool isMaximizingPlayer = pos->colorToMove() == RED;
     //check in TT for this position or its mirror
     Position* mirPos = mirrorPos(pos);
     pair<TTEntry, bool> readE = readTTOrMirror(pos, mirPos);
     TTEntry* e = readE.second ? &readE.first : nullptr; 
 
+    
     //use this entry only if it is for the same position as me, and if its depth is not lower than mine
     //make sure depth is not lower than mine because if my depth is higher, the search that put this entry into the table did not go deep enough to ensure i will get the same score if i search for myself
-    bool canUseThisEntry = e != nullptr && e->rboard == pos->rboard && e->yboard == pos->yboard && e->depth > depth;
+    bool canUseThisEntry = e != nullptr && e->rboard == pos->rboard && e->yboard == pos->yboard && e->depth >= depth;
     if (canUseThisEntry){
         //if we have already done exactly this, just stop the search down the tree and return the previously calculated score
         if (e->flag == EXACT) {
@@ -516,10 +528,31 @@ int minimax(Position* pos, int depth, int alpha, int beta){//, bool &printing){
         }
     }
     
+    
     //if we are at a leaf, return the static eval because we cant make any moves from here
     if(depth == 0 || detectWin(pos->rboard) || detectWin(pos->yboard)){
         pos->evaluate();
-        //printing = true;
+
+        //make table entry
+        newE.rboard = pos->rboard;
+        newE.yboard = pos->yboard;
+        newE.depth = depth;
+        newE.bestMove = 255;
+        newE.flag = EXACT;
+
+        newE.score = pos->eval;
+        writeTT(pos->hash, newE); //write it to table
+
+        //mirror
+        newE.rboard = mirrorBoard(pos->rboard);
+        newE.yboard = mirrorBoard(pos->yboard);
+        newE.depth = depth;
+        newE.bestMove = 255;
+        newE.flag = EXACT;
+
+        newE.score = pos->eval;
+        writeTT(pos->hash, newE); //write it to table
+        
         return pos->eval;
     }
 
@@ -543,7 +576,7 @@ int minimax(Position* pos, int depth, int alpha, int beta){//, bool &printing){
 
     if(isMaximizingPlayer){
         currentBest = -INF-1;
-        //for every child
+        //for every child (aka every move i can make)
         for(Position* child : *children){
             //minimax it
             int childMinimax = minimax(child, depth-1, alpha, beta);
@@ -552,11 +585,15 @@ int minimax(Position* pos, int depth, int alpha, int beta){//, bool &printing){
                 currentBest = childMinimax;
                 bestMove = child->mostRecentMove;
             }
-            
+            //
             alpha = max(alpha, childMinimax);
-            if(beta <= alpha){ //prune the rest
+            if(beta <= alpha){
                 break;
             }
+            // if(childMinimax >= beta){ //prune the rest
+            //     break;
+            // }
+            // alpha = max(alpha, currentBest);
         }
     }
     else{ //minimizing player
@@ -570,11 +607,15 @@ int minimax(Position* pos, int depth, int alpha, int beta){//, bool &printing){
                 currentBest = childMinimax;
                 bestMove = child->mostRecentMove;
             }
-            
-            beta = min(beta, childMinimax);
-            if(beta <= alpha){ //prune the rest
+            //
+            beta = max(beta, childMinimax);
+            if(beta <= alpha){
                 break;
             }
+            // if(currentBest <= alpha){ //prune the rest
+            //     break;
+            // }
+            // alpha = min(beta, currentBest);
         }
     }
 
@@ -584,7 +625,6 @@ int minimax(Position* pos, int depth, int alpha, int beta){//, bool &printing){
     delete children; //delete the vector itself
 
     //make table entry
-    TTEntry newE;
     newE.rboard = pos->rboard;
     newE.yboard = pos->yboard;
     newE.depth = depth;
@@ -627,10 +667,11 @@ int minimax(Position* pos, int depth, int alpha, int beta){//, bool &printing){
     return currentBest;
 }
 
+
 int pickBestMoveFromRootTT(Position root) {
     TTEntry e = readTT(root.hash).first; //get TT entry for root
     if (e.rboard != root.rboard || e.yboard != root.yboard) {
-        return -1; //TT might be empty
+        return -37; //TT might be empty
     }
     return e.bestMove; //move with best score
 }
@@ -642,31 +683,37 @@ void threadWorker(int threadID, Position &root, int maxDepth) {
     }
 }
 
-int bestMove(Position pos, int depth) {
-    for (int d = depth; d <= depth; d++) {
-        minimax(&pos, d, -INF, INF);
-    }
-    return pickBestMoveFromRootTT(pos);
-}
-
-// int bestMove(Position pos, int depth){
-//     //create n new threads that will find the best move
-//     int n = 8;
-//     vector<thread> threads;
-//     for(int i = 0; i < n; i++){
-//         //need ref() for passing by ref to threads
-//         threads.emplace_back(threadWorker, i, ref(pos), depth);
+// int bestMove(Position pos, int depth) {
+//     for (int d = 1; d <= depth; d++) {
+//         minimax(&pos, d, -INF, INF);
+//         // printTT();
+//         // cout << '\n';
+//         // cout << '\n';
+//         // cout << '\n';
+//         // cout << '\n';
+//         // cout << '\n';
 //     }
-
-//     //must be reference since threads cant be copied
-//     for(thread &t : threads){
-//         t.join();
-//     }
-
-//     //return the best move found by the threads
-//     //check TT for best move of hash of root position
-//     return pickBestMoveFromRootTT(pos.hash);
+//     return pickBestMoveFromRootTT(pos);
 // }
+
+int bestMove(Position pos, int depth){
+    //create n new threads that will find the best move
+    int n = 4;
+    vector<thread> threads;
+    for(int i = 0; i < n; i++){
+        //need ref() for passing by ref to threads
+        threads.emplace_back(threadWorker, i, ref(pos), depth);
+    }
+
+    //must be reference since threads cant be copied
+    for(thread &t : threads){
+        t.join();
+    }
+
+    //return the best move found by the threads
+    //check TT for best move of hash of root position
+    return pickBestMoveFromRootTT(pos.hash);
+}
 
 void Position::initHash(){
     hash = 0;
@@ -700,8 +747,6 @@ int main(int argc, char* argv[]){
         pos.printBoard();
     }
     cout << bestMove(pos, depth) <<'\n';
-
-    //printTT(tt);
 
     //end time
     auto end = std::chrono::high_resolution_clock::now();

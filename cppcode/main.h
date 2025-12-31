@@ -7,6 +7,8 @@
 
 #define INF 99999999 //almost 100 million
 
+extern int nodeCount;
+
 enum{
     RED, YELLOW
 };
@@ -49,4 +51,5 @@ struct TTEntry {
     uint8_t flag;      //EXACT, LOWERBOUND, UPPERBOUND
     uint8_t bestMove;  //best move for ordering
     void print();
+    int myNodeCount;
 };

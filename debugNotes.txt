@@ -1,0 +1,27 @@
+0 0 0 0 0 0 0 
+0 0 0 0 0 0 0 
+0 0 0 Y 0 0 0 
+0 0 0 R 0 0 0 
+0 0 0 Y 0 0 0 
+Y 0 R R R 0 0 
+pruning is wrong because it never checks this position which is needs to for sure
+
+0 0 0 0 0 0 0 
+0 0 0 R 0 0 0 
+0 0 0 Y 0 0 0 
+0 0 0 R 0 0 0 
+0 0 0 Y 0 0 0 
+Y 0 0 R R 0 0 
+it assumes this is the best move for red because it never checked the red 3 in a row
+
+
+its possible that currentBest is backwards and should actually be turned into currentWorst
+
+
+pretty sure all of the above is not the problem
+the problem is that the tt is not overwriting correctly as it iteratively deepens
+    its not using the tt properly
+        check how it uses depth?
+
+IT NEVER OVERWRITES WORSE ENTRIES!!!!!
+there was one line of code in writeTT() that prevented you from writing to the TT if that key was already in the TT
