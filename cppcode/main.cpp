@@ -24,6 +24,14 @@ unordered_map<BOARD, TTEntry*>* tt = new unordered_map<BOARD, TTEntry*>();
 
 mutex TTmtx;
 
+U64 combineKeyWithData(U64 key, TTEntry data){
+
+}
+
+TTEntry separateKeyFromData(U64 key, TTEntry data){
+
+}
+
 pair<TTEntry, bool> readTT(BOARD key){
     lock_guard<mutex> lock(TTmtx);
     auto it = tt->find(key);
@@ -396,8 +404,8 @@ void Position::evaluate(){
 }
 
 
-vector<Position*>* Position::children(uint8_t firstMove) {
-    vector<Position*>* output = new vector<Position*>();
+vector<Position> Position::children(uint8_t firstMove) {
+    vector<Position> output;
 
     //default order of columns: middle first, then alternate outwards
     int colOrder[7] = {3, 4, 2, 5, 1, 6, 0};
@@ -411,21 +419,22 @@ vector<Position*>* Position::children(uint8_t firstMove) {
                 finalOrder.push_back(col);
             }
         }
-    } else {
+    }
+    else {
         finalOrder.assign(colOrder, colOrder + 7); //use default order
     }
 
     for (int col : finalOrder) {
         int count = __builtin_popcountll(getColumn(yboard, col) | getColumn(rboard, col));
         if (count < 6) {
-            Position* newPos = new Position(rboard, yboard);
-            newPos->hash = hash;
+            Position newPos = Position(rboard, yboard);
+            newPos.hash = hash;
             if (col < 0 || col >= 7) {
                 std::cerr << "Invalid child: col=" << col << "\n";
                 assert(false);
             }
-            newPos->playMove(col);
-            output->push_back(newPos);
+            newPos.playMove(col);
+            output.push_back(newPos);
         }
     }
 
@@ -456,11 +465,11 @@ BOARD mirrorBoard(BOARD board) {
     return mirrored;
 }
 
-Position* mirrorPos(Position* pos) {
-    Position* mirrored = new Position();
-    mirrored->rboard = mirrorBoard(pos->rboard);
-    mirrored->yboard = mirrorBoard(pos->yboard);
-    mirrored->initHash();
+Position mirrorPos(Position pos) {
+    Position mirrored = Position();
+    mirrored.rboard = mirrorBoard(pos.rboard);
+    mirrored.yboard = mirrorBoard(pos.yboard);
+    mirrored.initHash();
     return mirrored;
 }
 
@@ -499,20 +508,20 @@ pair<TTEntry, bool> readTTOrMirror(Position* pos, Position* mirPos){
 //alpha is best score possible so far for maximizing player (red) at this level
 //beta is best score possible so far for minimizing player (yellow) at this level
 //minimax returns the best possible score that can be achieved for a given player from this position
-int minimax(Position* pos, int depth, int alpha, int beta){
+int minimax(Position pos, int depth, int alpha, int beta){
     nodeCount++;
     TTEntry newE;
     newE.myNodeCount = nodeCount;
-    bool isMaximizingPlayer = pos->colorToMove() == RED;
+    bool isMaximizingPlayer = pos.colorToMove() == RED;
     //check in TT for this position or its mirror
-    Position* mirPos = mirrorPos(pos);
-    pair<TTEntry, bool> readE = readTTOrMirror(pos, mirPos);
+    Position mirPos = mirrorPos(pos);
+    pair<TTEntry, bool> readE = readTTOrMirror(&pos, &mirPos);
     TTEntry* e = readE.second ? &readE.first : nullptr; 
 
     
     //use this entry only if it is for the same position as me, and if its depth is not lower than mine
     //make sure depth is not lower than mine because if my depth is higher, the search that put this entry into the table did not go deep enough to ensure i will get the same score if i search for myself
-    bool canUseThisEntry = e != nullptr && e->rboard == pos->rboard && e->yboard == pos->yboard && e->depth >= depth;
+    bool canUseThisEntry = e != nullptr && e->rboard == pos.rboard && e->yboard == pos.yboard && e->depth >= depth;
     if (canUseThisEntry){
         //if we have already done exactly this, just stop the search down the tree and return the previously calculated score
         if (e->flag == EXACT) {
@@ -534,45 +543,45 @@ int minimax(Position* pos, int depth, int alpha, int beta){
     
     
     //if we are at a leaf, return the static eval because we cant make any moves from here
-    if(depth == 0 || detectWin(pos->rboard) || detectWin(pos->yboard)){
-        pos->evaluate();
+    if(depth == 0 || detectWin(pos.rboard) || detectWin(pos.yboard)){
+        pos.evaluate();
 
         //make table entry
-        newE.rboard = pos->rboard;
-        newE.yboard = pos->yboard;
+        newE.rboard = pos.rboard;
+        newE.yboard = pos.yboard;
         newE.depth = depth;
         newE.bestMove = 255;
         newE.flag = EXACT;
 
-        newE.score = pos->eval;
-        writeTT(pos->hash, newE); //write it to table
+        newE.score = pos.eval;
+        writeTT(pos.hash, newE); //write it to table
 
         //mirror
-        newE.rboard = mirrorBoard(pos->rboard);
-        newE.yboard = mirrorBoard(pos->yboard);
+        newE.rboard = mirrorBoard(pos.rboard);
+        newE.yboard = mirrorBoard(pos.yboard);
         newE.depth = depth;
         newE.bestMove = 255;
         newE.flag = EXACT;
 
-        newE.score = pos->eval;
-        writeTT(mirPos->hash, newE); //write it to table
+        newE.score = pos.eval;
+        writeTT(mirPos.hash, newE); //write it to table
         
-        return pos->eval;
+        return pos.eval;
     }
 
     int bestMove = 42;
-    vector<Position*>* children;
+    vector<Position> children;
     //if the table entry has a best move, check that first
     if(e!=nullptr && e->bestMove != 255){
-        children = pos->children(e->bestMove);
+        children = pos.children(e->bestMove);
         bestMove = e->bestMove;
     }
     else{ //otherwise go check center outwards
-        children = pos->children();
+        children = pos.children();
     }
 
     //if the board is full, but there are no wins, return 0 for tie (cant be a win if the code reaches this point due to above return)
-    if(children->size() == 0){
+    if(children.size() == 0){
         return 0;
     }
 
@@ -581,13 +590,13 @@ int minimax(Position* pos, int depth, int alpha, int beta){
     if(isMaximizingPlayer){
         currentBest = -INF-1;
         //for every child (aka every move i can make)
-        for(Position* child : *children){
+        for(Position child : children){
             //minimax it
             int childMinimax = minimax(child, depth-1, alpha, beta);
             //check the minimax against the current best and keep the best
             if(childMinimax > currentBest){
                 currentBest = childMinimax;
-                bestMove = child->mostRecentMove;
+                bestMove = child.mostRecentMove;
             }
             //
             alpha = max(alpha, childMinimax);
@@ -603,13 +612,13 @@ int minimax(Position* pos, int depth, int alpha, int beta){
     else{ //minimizing player
         currentBest = INF+1;
         //for every child
-        for(Position* child : *children){
+        for(Position child : children){
             //minimax it
             int childMinimax = minimax(child, depth-1, alpha, beta);
             //check the minimax against the current best and keep the best
             if(childMinimax < currentBest){
                 currentBest = childMinimax;
-                bestMove = child->mostRecentMove;
+                bestMove = child.mostRecentMove;
             }
             //
             beta = min(beta, childMinimax);
@@ -623,14 +632,9 @@ int minimax(Position* pos, int depth, int alpha, int beta){
         }
     }
 
-    for (Position* child : *children) {
-        delete child; //delete each Position*
-    }
-    delete children; //delete the vector itself
-
     //make table entry
-    newE.rboard = pos->rboard;
-    newE.yboard = pos->yboard;
+    newE.rboard = pos.rboard;
+    newE.yboard = pos.yboard;
     newE.depth = depth;
     newE.bestMove = bestMove;
 
@@ -645,11 +649,11 @@ int minimax(Position* pos, int depth, int alpha, int beta){
     }
 
     newE.score = currentBest;
-    writeTT(pos->hash, newE); //write it to table
+    writeTT(pos.hash, newE); //write it to table
 
     //make mirrored table entry
-    newE.rboard = mirrorBoard(pos->rboard);
-    newE.yboard = mirrorBoard(pos->yboard);
+    newE.rboard = mirrorBoard(pos.rboard);
+    newE.yboard = mirrorBoard(pos.yboard);
     newE.depth = depth;
     newE.bestMove = mirrorMove(bestMove);
 
@@ -664,9 +668,7 @@ int minimax(Position* pos, int depth, int alpha, int beta){
     }
 
     newE.score = currentBest;
-    writeTT(mirPos->hash, newE); //write it to table
-
-    delete mirPos;
+    writeTT(mirPos.hash, newE); //write it to table
 
     return currentBest;
 }
@@ -689,7 +691,7 @@ int pickBestMoveFromRootTT(Position root) {
 void threadWorker(int threadID, Position root, int maxDepth) {
     //each thread runs minimax from the root at depths up to the desired depth
     for (int depth = 1; depth <= maxDepth; depth++) {
-        minimax(&root, depth, -INF, INF);
+        minimax(root, depth, -INF, INF);
     }
 }
 int bestMove(Position pos, int depth){
@@ -709,7 +711,7 @@ int bestMove(Position pos, int depth){
     }
     else{
         for (int d = 1; d <= depth; d++) {
-            minimax(&pos, d, -INF, INF);
+            minimax(pos, d, -INF, INF);
         }
     }
 

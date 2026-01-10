@@ -37,7 +37,7 @@ struct Position{
     void initHash();
     int opponentCanWinNextMove();
     int canWinNextMove();
-    std::vector<Position*>* children(uint8_t firstMove = 255);
+    std::vector<Position> children(uint8_t firstMove = 255);
 };
 
 enum{
@@ -45,8 +45,7 @@ enum{
 };
 
 struct TTEntry {
-    BOARD rboard;
-    BOARD yboard;
+    U64 keyXorData;
     int depth;         //depth of stored search
     int score;         //score from minimax
     uint8_t flag;      //EXACT, LOWERBOUND, UPPERBOUND
