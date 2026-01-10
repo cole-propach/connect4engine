@@ -15,6 +15,8 @@
 
 using namespace std;
 
+bool isMultiThreaded = true;
+
 int nodeCount = 0;
 
 //zobrist uint64_t -> to TTEntry (seen in h file)
@@ -36,6 +38,8 @@ pair<TTEntry, bool> readTT(BOARD key){
 
 void writeTT(BOARD key, TTEntry val){
     lock_guard<mutex> lock(TTmtx);
+    // cout << "Adding entry to TT with board: " << endl;
+    // val.print();
     TTEntry* newVal = new TTEntry();
     newVal->rboard = val.rboard;
     newVal->yboard = val.yboard;
@@ -44,7 +48,7 @@ void writeTT(BOARD key, TTEntry val){
     newVal->flag = val.flag;
     newVal->bestMove = val.bestMove;
     newVal->myNodeCount = val.myNodeCount;
-    //used to be check for key value here
+    //used to be check for key value here to prevent overwriting entries
     (*tt)[key] = newVal;
 }
 
@@ -551,7 +555,7 @@ int minimax(Position* pos, int depth, int alpha, int beta){
         newE.flag = EXACT;
 
         newE.score = pos->eval;
-        writeTT(pos->hash, newE); //write it to table
+        writeTT(mirPos->hash, newE); //write it to table
         
         return pos->eval;
     }
@@ -608,7 +612,7 @@ int minimax(Position* pos, int depth, int alpha, int beta){
                 bestMove = child->mostRecentMove;
             }
             //
-            beta = max(beta, childMinimax);
+            beta = min(beta, childMinimax);
             if(beta <= alpha){
                 break;
             }
@@ -671,49 +675,120 @@ int minimax(Position* pos, int depth, int alpha, int beta){
 int pickBestMoveFromRootTT(Position root) {
     TTEntry e = readTT(root.hash).first; //get TT entry for root
     if (e.rboard != root.rboard || e.yboard != root.yboard) {
-        return -37; //TT might be empty
+        std::cout << "  e.rboard   = 0x" << std::hex << e.rboard << std::dec << "\n";
+        std::cout << "  e.yboard   = 0x" << std::hex << e.yboard << std::dec << "\n";
+        std::cout << "  root.rboard   = 0x" << std::hex << root.rboard << std::dec << "\n";
+        std::cout << "  root.yboard   = 0x" << std::hex << root.yboard << std::dec << "\n";
+        return -37; //makes sure the value we are reading corresponds to the root
     }
     return e.bestMove; //move with best score
 }
 
-void threadWorker(int threadID, Position &root, int maxDepth) {
+// this version of bestMove just iteratively deepens without overhead
+//----------------------------------------------------------------------
+void threadWorker(int threadID, Position root, int maxDepth) {
     //each thread runs minimax from the root at depths up to the desired depth
     for (int depth = 1; depth <= maxDepth; depth++) {
         minimax(&root, depth, -INF, INF);
     }
 }
-
-// int bestMove(Position pos, int depth) {
-//     for (int d = 1; d <= depth; d++) {
-//         minimax(&pos, d, -INF, INF);
-//         // printTT();
-//         // cout << '\n';
-//         // cout << '\n';
-//         // cout << '\n';
-//         // cout << '\n';
-//         // cout << '\n';
-//     }
-//     return pickBestMoveFromRootTT(pos);
-// }
-
 int bestMove(Position pos, int depth){
-    //create n new threads that will find the best move
-    int n = 4;
-    vector<thread> threads;
-    for(int i = 0; i < n; i++){
-        //need ref() for passing by ref to threads
-        threads.emplace_back(threadWorker, i, ref(pos), depth);
-    }
+    if(isMultiThreaded){
+        //create n new threads that will find the best move
+        int n = 7;
+        vector<thread> threads;
+        for(int i = 0; i < n; i++){
+            //need ref() for passing by ref to threads
+            threads.emplace_back(threadWorker, i, ref(pos), depth);
+        }
 
-    //must be reference since threads cant be copied
-    for(thread &t : threads){
-        t.join();
+        //must be reference since threads cant be copied
+        for(thread &t : threads){
+            t.join();
+        }
+    }
+    else{
+        for (int d = 1; d <= depth; d++) {
+            minimax(&pos, d, -INF, INF);
+        }
     }
 
     //return the best move found by the threads
     //check TT for best move of hash of root position
-    return pickBestMoveFromRootTT(pos.hash);
+    return pickBestMoveFromRootTT(pos);
 }
+//--------------------------------------------------------------------------
+
+// this one picks makes a thread for each child of the root and chooses the best result
+//--------------------------------------------------------------------------
+// int bestMove(Position pos, int depth){
+//     // auto printChildrenBoards = [](const std::vector<Position *>* children) {
+//     //     for (Position* p : *children) {
+//     //         if (p) {
+//     //             p->printBoard();
+//     //         }
+//     //     }
+//     // };
+
+//     bool isMaximizingPlayer = pos.colorToMove() == RED;
+
+//     if(isMultiThreaded){
+//         vector<Position *>* rootChildren = pos.children();
+//         // cout << "Children of Root: " <<endl;
+//         // printChildrenBoards(rootChildren);
+//         // cout << "End of Children of Root List" << endl;
+//         //create n new threads that will find the best move
+//         int n = rootChildren->size();
+//         vector<int> results(n);
+//         vector<thread> threads;
+//         for(int i = 0; i < n; i++){
+//             threads.emplace_back(
+//                 [&](int idx) {
+//                     results[idx] = minimax((*rootChildren)[idx], depth-1, -INF, INF);
+//                 },
+//                 i //pass i to the above lambda
+//             );
+//         }
+
+//         //must be reference since threads cant be copied
+//         for(thread &t : threads){
+//             t.join();
+//         }  
+
+//         // cout << "score of children" << endl;
+//         int bestChild = 0;
+//         for(int i = 0; i < n; i++){
+//             // cout << results[i] << endl;
+//             if(isMaximizingPlayer){
+//                 if(results[i] > results[bestChild]){
+//                     bestChild = i;
+//                 }
+//             }
+//             else{ //minimizing player
+//                 if(results[i] < results[bestChild]){
+//                     bestChild = i;
+//                 }
+//             }
+//         }
+//         // cout << "end of score of children" << endl;
+
+//         // printTT();
+//         return (*rootChildren)[bestChild]->mostRecentMove;
+//     }
+//     else{
+//         // d = 1 to enable iterative deepening
+//         // d = depth to disable iterative deepening
+//         for(int d = 1; d <= depth; d++){
+//             minimax(&pos, d, -INF, INF);
+//         }
+//     }
+
+//     //return the best move found by the threads
+//     //check TT for best move of hash of root position
+//     // printTT();
+//     return pickBestMoveFromRootTT(pos);
+// }
+//--------------------------------------------------------------------------
 
 void Position::initHash(){
     hash = 0;
@@ -728,9 +803,15 @@ void Position::initHash(){
 }
 
 int main(int argc, char* argv[]){
+    if(argc != 3 && argc != 4){
+        cout << "Wrong number of args. Usage: "<< endl;
+        cout << "./main [position as move sequence, ex. 33416] [depth] (OPTIONAL: if third arg is passed, multithreading will be disabled)" << endl;
+        return -1;
+    }
     //settings
-    bool printRuntime = false;
+    bool printRuntime = true;
     bool printBoard = true;
+    isMultiThreaded = (argc == 4) ? false : true;
 
     //start time
     auto start = std::chrono::high_resolution_clock::now();
@@ -745,6 +826,7 @@ int main(int argc, char* argv[]){
     pos.putStringIntoBoard(argv[1]);
     if(printBoard){
         pos.printBoard();
+        cout << (isMultiThreaded ? "Multithreading enabled" : "Multithreading disabled") << endl;
     }
     cout << bestMove(pos, depth) <<'\n';
 

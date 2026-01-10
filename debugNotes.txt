@@ -25,3 +25,6 @@ the problem is that the tt is not overwriting correctly as it iteratively deepen
 
 IT NEVER OVERWRITES WORSE ENTRIES!!!!!
 there was one line of code in writeTT() that prevented you from writing to the TT if that key was already in the TT
+
+
+its time to change the TT from an unordered_map to an array

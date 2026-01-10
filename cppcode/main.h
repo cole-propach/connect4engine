@@ -4,6 +4,7 @@
 #include <vector>
 
 #define BOARD uint64_t
+#define U64 uint64_t
 
 #define INF 99999999 //almost 100 million
 
