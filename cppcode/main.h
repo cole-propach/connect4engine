@@ -5,8 +5,12 @@
 
 #define BOARD uint64_t
 #define U64 uint64_t
+#define U8 uint8_t
+#define S16 int16_t
 
-#define INF 99999999 //almost 100 million
+#define INF 32767 //16 bit int limit
+
+#define TTSIZE 1000000 //1 million
 
 extern int nodeCount;
 
@@ -45,11 +49,10 @@ enum{
 };
 
 struct TTEntry {
-    U64 keyXorData;
-    int depth;         //depth of stored search
-    int score;         //score from minimax
-    uint8_t flag;      //EXACT, LOWERBOUND, UPPERBOUND
-    uint8_t bestMove;  //best move for ordering
-    void print();
-    int myNodeCount;
+    U64 keyFrag;
+    S16 score;       //score from minimax //32 bits
+    U8 depth;        //depth of stored search //6 bits
+    U8 flag;         //EXACT, LOWERBOUND, UPPERBOUND //2 bits
+    U8 bestMove;     //best move for ordering //3 bits
+    //void print();
 };

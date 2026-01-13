@@ -19,45 +19,78 @@ bool isMultiThreaded = true;
 
 int nodeCount = 0;
 
-//zobrist uint64_t -> to TTEntry (seen in h file)
-unordered_map<BOARD, TTEntry*>* tt = new unordered_map<BOARD, TTEntry*>();
+//zobrist uint64_t -> to U64 holding the key fragment and data
+//entry = MSB [top fragment of key (37 bits)][score (16 bits)][depth (6 bits)][flag (2 bits)][best move (3 bits)] LSB
+U64 tt[TTSIZE] = {0};
+
+//extract the given range of bits (inclusive). 0 is LSB and 63 is MSB
+uint64_t extractBits(uint64_t value, int low, int high) {
+    //create a mask of width (high - low + 1)
+    uint64_t mask = ((uint64_t(1) << (high - low + 1)) - 1);
+    //shift the value down by 'low' bits and apply mask
+    return (value >> low) & mask;
+}
+
+U64 makeCombinedEntry(U64 key, TTEntry data){
+    U64 entry = 0;
+    entry |= (key >> 27) & ((1ULL << 37) - 1); //37 bit mask (top 37 bits of key, not bottom)
+    entry = entry << 16;
+    entry |= (data.score & 0xFFFF); //16 bit mask
+    entry = entry << 6;
+    entry |= (data.depth & 0b111111); //6 bit mask
+    entry = entry << 2;
+    entry |= (data.flag & 0b11); //2 bit mask
+    entry = entry << 3;
+    entry |= (data.bestMove & 0b111); //3 bit mask
+    return entry;
+}
+
+TTEntry extractDataFromEntry(U64 entry){
+    TTEntry output;
+    output.keyFrag = extractBits(entry, 27, 63);
+    output.score = extractBits(entry, 11, 26);
+    output.depth = extractBits(entry, 5, 10);
+    output.flag = extractBits(entry, 3, 4);
+    output.bestMove = extractBits(entry, 0, 2);
+    return output;
+}
+
+bool entryIsSafe(U64 key, TTEntry data){
+    U64 inputTopFrag = extractBits(key, 27, 63);
+    return inputTopFrag == data.keyFrag;
+}
 
 mutex TTmtx;
 
-U64 combineKeyWithData(U64 key, TTEntry data){
-
+pair<TTEntry, bool> readTT(U64 key){
+    // lock_guard<mutex> lock(TTmtx);
+    // auto start = std::chrono::high_resolution_clock::now();
+    U64 entry = tt[key % TTSIZE];
+    TTEntry entryData = extractDataFromEntry(entry);
+    pair<TTEntry, bool> output = {entryData, entryIsSafe(key, entryData)};
+    // auto end = std::chrono::high_resolution_clock::now();
+    // auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
+    // cout << "read time: " << duration.count() << " \n";
+    return output;
 }
 
-TTEntry separateKeyFromData(U64 key, TTEntry data){
+int collisionCount = 0;
+int nonCollisionCount = 0;
+int firstInsert = 0;
 
-}
-
-pair<TTEntry, bool> readTT(BOARD key){
-    lock_guard<mutex> lock(TTmtx);
-    auto it = tt->find(key);
-    if(it != tt->end()){
-        return {*it->second, true};  //return the entry if found
+void writeTT(U64 key, TTEntry val){
+    U64 entry = makeCombinedEntry(key, val);
+    if(tt[key % TTSIZE] == 0){
+        firstInsert++;
+    }
+    else if(extractBits(tt[key % TTSIZE], 27, 63) != extractBits(key, 27, 63)){
+        //lock_guard<mutex> lock(TTmtx);
+        collisionCount++;
     }
     else{
-        //handle the case where the key is not found
-        return {TTEntry() , false};
+        nonCollisionCount++;
     }
-}
-
-void writeTT(BOARD key, TTEntry val){
-    lock_guard<mutex> lock(TTmtx);
-    // cout << "Adding entry to TT with board: " << endl;
-    // val.print();
-    TTEntry* newVal = new TTEntry();
-    newVal->rboard = val.rboard;
-    newVal->yboard = val.yboard;
-    newVal->depth = val.depth;
-    newVal->score = val.score;
-    newVal->flag = val.flag;
-    newVal->bestMove = val.bestMove;
-    newVal->myNodeCount = val.myNodeCount;
-    //used to be check for key value here to prevent overwriting entries
-    (*tt)[key] = newVal;
+    tt[key % TTSIZE] = entry;
 }
 
 //contains a random value for each color in each position to be used for hashing
@@ -77,41 +110,41 @@ void initZobrist() {
         }
     }
 }
-void TTEntry::print(){
-    Position printPos = Position(rboard, yboard);
-    printPos.printBoard();
-    std::cout << "TTEntry {\n";
-    std::cout << "  rboard   = 0x" << std::hex << rboard << std::dec << "\n";
-    std::cout << "  yboard   = 0x" << std::hex << yboard << std::dec << "\n";
-    std::cout << "  depth    = " << depth << "\n";
-    std::cout << "  score    = " << score << "\n";
-    std::cout << "  flag     = " << ((static_cast<int>(flag) == 0) ? ("EXACT") : ((static_cast<int>(flag) == 1) ? ("LOWERBOUND") : ("UPPERBOUND"))) << "\n";
-    std::cout << "  bestMove = " << static_cast<int>(bestMove) << "\n";
-    std::cout << "}\n";
-}
+// void TTEntry::print(){
+//     Position printPos = Position(rboard, yboard);
+//     printPos.printBoard();
+//     std::cout << "TTEntry {\n";
+//     std::cout << "  rboard   = 0x" << std::hex << rboard << std::dec << "\n";
+//     std::cout << "  yboard   = 0x" << std::hex << yboard << std::dec << "\n";
+//     std::cout << "  depth    = " << depth << "\n";
+//     std::cout << "  score    = " << score << "\n";
+//     std::cout << "  flag     = " << ((static_cast<int>(flag) == 0) ? ("EXACT") : ((static_cast<int>(flag) == 1) ? ("LOWERBOUND") : ("UPPERBOUND"))) << "\n";
+//     std::cout << "  bestMove = " << static_cast<int>(bestMove) << "\n";
+//     std::cout << "}\n";
+// }
 
 #include <queue>
-void printTT() {
-    std::priority_queue<pair<int, TTEntry*>> pq;
-    std::cout << "=== Transposition Table (" << tt->size() << " entries) ===\n";
+// void printTT() {
+//     std::priority_queue<pair<int, TTEntry*>> pq;
+//     std::cout << "=== Transposition Table (" << tt->size() << " entries) ===\n";
 
-    for (const auto& pair : *tt) {
-        pq.push({pair.second->depth, pair.second});
-    }
+//     for (const auto& pair : *tt) {
+//         pq.push({pair.second->depth, pair.second});
+//     }
 
-    while(pq.size()){
-        auto [nodeCount, entry] = pq.top();
-        pq.pop();
+//     while(pq.size()){
+//         auto [nodeCount, entry] = pq.top();
+//         pq.pop();
 
-        if (entry) {
-            entry->print();
-        } else {
-            std::cout << "  (null entry)\n";
-        }
+//         if (entry) {
+//             entry->print();
+//         } else {
+//             std::cout << "  (null entry)\n";
+//         }
 
-        std::cout << "---------------------------------------\n";
-    }
-}
+//         std::cout << "---------------------------------------\n";
+//     }
+// }
 
 int getBitIndex(int row, int col) {
     return col * 7 + row; //includes sentinel bit at the top of each column
@@ -486,58 +519,61 @@ int mirrorMove(int col) {
     return 6 - col; //mirror across center column
 }
 
-pair<TTEntry, bool> readTTOrMirror(Position* pos, Position* mirPos){
-    auto e = readTT(pos->hash);
-    auto eMir = readTT(mirPos->hash);
+pair<TTEntry, bool> readTTOrMirror(Position pos, Position mirPos){
+    auto e = readTT(pos.hash);
+    auto eMir = readTT(mirPos.hash);
 
     if(e.second){ //if we found the entry, return it
         return {e.first, true};
     }
     else if(eMir.second){ //if we did not find the entry, but did find its mirror, mirror the entry and return that
         //return a TTEntry that has been mirrored
-        TTEntry* eCopy = new TTEntry(eMir.first);
-        eCopy->bestMove = mirrorMove(eCopy->bestMove);
-        eCopy->rboard = mirrorBoard(pos->rboard);
-        eCopy->yboard = mirrorBoard(pos->yboard);
-        return {*eCopy, true};
+        TTEntry eCopy = TTEntry(eMir.first);
+        eCopy.bestMove = mirrorMove(eCopy.bestMove);
+        return {eCopy, true};
     }
     return {TTEntry(), false};
 }
+
+int pruneCount = 0;
 
 //alpha-beta pruning works by maintaining a search window [alpha, beta)
 //alpha is best score possible so far for maximizing player (red) at this level
 //beta is best score possible so far for minimizing player (yellow) at this level
 //minimax returns the best possible score that can be achieved for a given player from this position
 int minimax(Position pos, int depth, int alpha, int beta){
-    nodeCount++;
-    TTEntry newE;
-    newE.myNodeCount = nodeCount;
+    //nodeCount++;
+    TTEntry newE = TTEntry();
+    //newE.myNodeCount = nodeCount;
     bool isMaximizingPlayer = pos.colorToMove() == RED;
     //check in TT for this position or its mirror
     Position mirPos = mirrorPos(pos);
-    pair<TTEntry, bool> readE = readTTOrMirror(&pos, &mirPos);
-    TTEntry* e = readE.second ? &readE.first : nullptr; 
+    pair<TTEntry, bool> readE = readTTOrMirror(pos, mirPos);
+    bool entryIsValid = readE.second;
+    TTEntry e = readE.first; 
 
     
     //use this entry only if it is for the same position as me, and if its depth is not lower than mine
     //make sure depth is not lower than mine because if my depth is higher, the search that put this entry into the table did not go deep enough to ensure i will get the same score if i search for myself
-    bool canUseThisEntry = e != nullptr && e->rboard == pos.rboard && e->yboard == pos.yboard && e->depth >= depth;
+    bool canUseThisEntry = entryIsValid && e.depth >= depth;
     if (canUseThisEntry){
         //if we have already done exactly this, just stop the search down the tree and return the previously calculated score
-        if (e->flag == EXACT) {
-            return e->score;
+        if (e.flag == EXACT) {
+            pruneCount++;
+            return e.score;
         }
         //need to set alpha and not return because the search that put this entry in did not complete the search for this position, it was pruned
-        if (e->flag == LOWERBOUND) {
-            alpha = max(alpha, e->score);
+        if (e.flag == LOWERBOUND) {
+            alpha = max(alpha, (int)e.score);
         }
         //need to set beta, same explanation as alpha
-        if (e->flag == UPPERBOUND) {
-            beta = min(beta, e->score);
+        if (e.flag == UPPERBOUND) {
+            beta = min(beta, (int)e.score);
         }
         //prune condition
         if (alpha >= beta) {
-            return e->score;
+            pruneCount++;
+            return e.score;
         }
     }
     
@@ -547,8 +583,6 @@ int minimax(Position pos, int depth, int alpha, int beta){
         pos.evaluate();
 
         //make table entry
-        newE.rboard = pos.rboard;
-        newE.yboard = pos.yboard;
         newE.depth = depth;
         newE.bestMove = 255;
         newE.flag = EXACT;
@@ -557,8 +591,6 @@ int minimax(Position pos, int depth, int alpha, int beta){
         writeTT(pos.hash, newE); //write it to table
 
         //mirror
-        newE.rboard = mirrorBoard(pos.rboard);
-        newE.yboard = mirrorBoard(pos.yboard);
         newE.depth = depth;
         newE.bestMove = 255;
         newE.flag = EXACT;
@@ -572,9 +604,9 @@ int minimax(Position pos, int depth, int alpha, int beta){
     int bestMove = 42;
     vector<Position> children;
     //if the table entry has a best move, check that first
-    if(e!=nullptr && e->bestMove != 255){
-        children = pos.children(e->bestMove);
-        bestMove = e->bestMove;
+    if(entryIsValid && e.bestMove != 255){
+        children = pos.children(e.bestMove);
+        bestMove = e.bestMove;
     }
     else{ //otherwise go check center outwards
         children = pos.children();
@@ -601,12 +633,9 @@ int minimax(Position pos, int depth, int alpha, int beta){
             //
             alpha = max(alpha, childMinimax);
             if(beta <= alpha){
+                pruneCount++;
                 break;
             }
-            // if(childMinimax >= beta){ //prune the rest
-            //     break;
-            // }
-            // alpha = max(alpha, currentBest);
         }
     }
     else{ //minimizing player
@@ -623,18 +652,13 @@ int minimax(Position pos, int depth, int alpha, int beta){
             //
             beta = min(beta, childMinimax);
             if(beta <= alpha){
+                pruneCount++;
                 break;
             }
-            // if(currentBest <= alpha){ //prune the rest
-            //     break;
-            // }
-            // alpha = min(beta, currentBest);
         }
     }
 
     //make table entry
-    newE.rboard = pos.rboard;
-    newE.yboard = pos.yboard;
     newE.depth = depth;
     newE.bestMove = bestMove;
 
@@ -652,8 +676,6 @@ int minimax(Position pos, int depth, int alpha, int beta){
     writeTT(pos.hash, newE); //write it to table
 
     //make mirrored table entry
-    newE.rboard = mirrorBoard(pos.rboard);
-    newE.yboard = mirrorBoard(pos.yboard);
     newE.depth = depth;
     newE.bestMove = mirrorMove(bestMove);
 
@@ -676,13 +698,6 @@ int minimax(Position pos, int depth, int alpha, int beta){
 
 int pickBestMoveFromRootTT(Position root) {
     TTEntry e = readTT(root.hash).first; //get TT entry for root
-    if (e.rboard != root.rboard || e.yboard != root.yboard) {
-        std::cout << "  e.rboard   = 0x" << std::hex << e.rboard << std::dec << "\n";
-        std::cout << "  e.yboard   = 0x" << std::hex << e.yboard << std::dec << "\n";
-        std::cout << "  root.rboard   = 0x" << std::hex << root.rboard << std::dec << "\n";
-        std::cout << "  root.yboard   = 0x" << std::hex << root.yboard << std::dec << "\n";
-        return -37; //makes sure the value we are reading corresponds to the root
-    }
     return e.bestMove; //move with best score
 }
 
@@ -839,6 +854,20 @@ int main(int argc, char* argv[]){
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     if(printRuntime)
         cout << "Runtime: " << duration.count() << " ms\n";
+
+    cout << "collision count: " << collisionCount << endl;
+    cout << "noncollision count: " << nonCollisionCount << endl;
+    cout << "first insert count: " << firstInsert << endl;
+    cout << "prune count: " << pruneCount << endl;
+
+    int zeroCount = 0;
+    for(int i = 0; i < TTSIZE; i++){
+        zeroCount += (tt[i]==0)? 1 : 0;
+    }
+    cout << "unused TT slots: " << zeroCount << endl;
+    double zeros = zeroCount * 1.0;
+    double total = TTSIZE * 1.0;
+    cout << "percentage unused: " << zeros/total * 100.0 << "%" << endl; 
 }
 
 //254554334123543263652

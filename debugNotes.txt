@@ -28,3 +28,6 @@ there was one line of code in writeTT() that prevented you from writing to the T
 
 
 its time to change the TT from an unordered_map to an array
+
+test these
+    - less pruning due to collision overwrites
