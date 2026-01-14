@@ -22,6 +22,7 @@ int nodeCount = 0;
 //zobrist uint64_t -> to U64 holding the key fragment and data
 //entry = MSB [top fragment of key (37 bits)][score (16 bits)][depth (6 bits)][flag (2 bits)][best move (3 bits)] LSB
 U64 tt[TTSIZE] = {0};
+int currentTableAge = 0;
 
 //extract the given range of bits (inclusive). 0 is LSB and 63 is MSB
 uint64_t extractBits(uint64_t value, int low, int high) {
@@ -61,16 +62,19 @@ bool entryIsSafe(U64 key, TTEntry data){
 }
 
 mutex TTmtx;
+int totalReads = 0;
+long long totalReadTime = 0;
 
 pair<TTEntry, bool> readTT(U64 key){
-    // lock_guard<mutex> lock(TTmtx);
+    //lock_guard<mutex> lock(TTmtx);
     // auto start = std::chrono::high_resolution_clock::now();
     U64 entry = tt[key % TTSIZE];
     TTEntry entryData = extractDataFromEntry(entry);
     pair<TTEntry, bool> output = {entryData, entryIsSafe(key, entryData)};
     // auto end = std::chrono::high_resolution_clock::now();
     // auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
-    // cout << "read time: " << duration.count() << " \n";
+    // totalReads++;
+    // totalReadTime+=duration.count();
     return output;
 }
 
@@ -80,16 +84,32 @@ int firstInsert = 0;
 
 void writeTT(U64 key, TTEntry val){
     U64 entry = makeCombinedEntry(key, val);
-    if(tt[key % TTSIZE] == 0){
-        firstInsert++;
-    }
-    else if(extractBits(tt[key % TTSIZE], 27, 63) != extractBits(key, 27, 63)){
-        //lock_guard<mutex> lock(TTmtx);
-        collisionCount++;
-    }
-    else{
-        nonCollisionCount++;
-    }
+    // if(tt[key % TTSIZE] == 0){
+    //     firstInsert++;
+    // }
+    // else if(extractBits(tt[key % TTSIZE], 27, 63) != extractBits(key, 27, 63)){
+    //     //lock_guard<mutex> lock(TTmtx);
+    //     collisionCount++;
+    // }
+    // else{
+    //     nonCollisionCount++;
+    // }
+
+    // int replace = false;
+	
+	// if(tt[key % TTSIZE] == 0) {
+	// 	replace = true;
+	// } 
+    // else {
+	// 	if(table->pTable[index].age < table->currentAge) {
+    //         replace = TRUE;
+    //     } else if(EXTRACT_DEPTH(table->pTable[index].smp_data) <= depth) {
+    //         replace = TRUE;
+    //     }
+	// }
+    //
+	// if (replace == FALSE) return;
+
     tt[key % TTSIZE] = entry;
 }
 
@@ -535,7 +555,7 @@ pair<TTEntry, bool> readTTOrMirror(Position pos, Position mirPos){
     return {TTEntry(), false};
 }
 
-int pruneCount = 0;
+std::atomic<uint64_t> pruneCount{0};
 
 //alpha-beta pruning works by maintaining a search window [alpha, beta)
 //alpha is best score possible so far for maximizing player (red) at this level
@@ -559,7 +579,7 @@ int minimax(Position pos, int depth, int alpha, int beta){
     if (canUseThisEntry){
         //if we have already done exactly this, just stop the search down the tree and return the previously calculated score
         if (e.flag == EXACT) {
-            pruneCount++;
+            //pruneCount.fetch_add(1, std::memory_order_relaxed);
             return e.score;
         }
         //need to set alpha and not return because the search that put this entry in did not complete the search for this position, it was pruned
@@ -572,7 +592,7 @@ int minimax(Position pos, int depth, int alpha, int beta){
         }
         //prune condition
         if (alpha >= beta) {
-            pruneCount++;
+            //pruneCount.fetch_add(1, std::memory_order_relaxed);
             return e.score;
         }
     }
@@ -633,7 +653,7 @@ int minimax(Position pos, int depth, int alpha, int beta){
             //
             alpha = max(alpha, childMinimax);
             if(beta <= alpha){
-                pruneCount++;
+                //pruneCount.fetch_add(1, std::memory_order_relaxed);
                 break;
             }
         }
@@ -652,7 +672,7 @@ int minimax(Position pos, int depth, int alpha, int beta){
             //
             beta = min(beta, childMinimax);
             if(beta <= alpha){
-                pruneCount++;
+                //pruneCount.fetch_add(1, std::memory_order_relaxed);
                 break;
             }
         }
@@ -712,7 +732,7 @@ void threadWorker(int threadID, Position root, int maxDepth) {
 int bestMove(Position pos, int depth){
     if(isMultiThreaded){
         //create n new threads that will find the best move
-        int n = 7;
+        int n = 4;
         vector<thread> threads;
         for(int i = 0; i < n; i++){
             //need ref() for passing by ref to threads
@@ -826,8 +846,8 @@ int main(int argc, char* argv[]){
         return -1;
     }
     //settings
-    bool printRuntime = true;
-    bool printBoard = true;
+    bool printRuntime = false;
+    bool printBoard = false;
     isMultiThreaded = (argc == 4) ? false : true;
 
     //start time
@@ -852,22 +872,27 @@ int main(int argc, char* argv[]){
 
     //duriation of main() in ms
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    if(printRuntime)
+    if(printRuntime){
         cout << "Runtime: " << duration.count() << " ms\n";
 
-    cout << "collision count: " << collisionCount << endl;
-    cout << "noncollision count: " << nonCollisionCount << endl;
-    cout << "first insert count: " << firstInsert << endl;
-    cout << "prune count: " << pruneCount << endl;
+        cout << "collision count: " << collisionCount << endl;
+        cout << "noncollision count: " << nonCollisionCount << endl;
+        cout << "first insert count: " << firstInsert << endl;
+        cout << "prune count: " << pruneCount << endl;
 
-    int zeroCount = 0;
-    for(int i = 0; i < TTSIZE; i++){
-        zeroCount += (tt[i]==0)? 1 : 0;
+        int zeroCount = 0;
+        for(int i = 0; i < TTSIZE; i++){
+            zeroCount += (tt[i]==0)? 1 : 0;
+        }
+        cout << "unused TT slots: " << zeroCount << endl;
+        double zeros = zeroCount * 1.0;
+        double total = TTSIZE * 1.0;
+        cout << "percentage unused: " << zeros/total * 100.0 << "%" << endl; 
+
+        cout << "total read time: " << totalReadTime << endl;
+        cout << "total number of reads: " << totalReads << endl;
+        cout << "average time per read: " << ((double)totalReadTime) / ((double)totalReads) << endl;
     }
-    cout << "unused TT slots: " << zeroCount << endl;
-    double zeros = zeroCount * 1.0;
-    double total = TTSIZE * 1.0;
-    cout << "percentage unused: " << zeros/total * 100.0 << "%" << endl; 
 }
 
 //254554334123543263652
